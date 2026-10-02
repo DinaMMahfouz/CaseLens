@@ -31,6 +31,24 @@ def _iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt else None
 
 
+_FINDING_LISTS = {"top_issues", "missed_steps", "repeated_requests", "shift_points", "handover_issues"}
+
+
+def _slim_llm(llm: dict[str, Any]) -> dict[str, Any]:
+    """Drop per-run finding lists: findings are pushed once, in their own table."""
+    out: dict[str, Any] = {}
+    for name, dim in (llm or {}).items():
+        dim = dict(dim)
+        if isinstance(dim.get("runs"), list):
+            dim["runs"] = [
+                {**r, "result": ({k: v for k, v in r["result"].items() if k not in _FINDING_LISTS}
+                                 if isinstance(r.get("result"), dict) else r.get("result"))}
+                for r in dim["runs"]
+            ]
+        out[name] = dim
+    return out
+
+
 def push_key(run: t.Run) -> str:
     return f"{_iso(run.as_of)}#{run.id}#{run.config_hash}"
 
@@ -76,7 +94,7 @@ def build_payload(session: Session, run_id: int) -> dict[str, list[dict[str, Any
         out["audits"].append({
             "id": aid, "case_id": cid, "run_id": rid, "state": a.state, "overall": a.overall,
             "dimensions": a.dimensions or [], "slo": a.slo, "idle": a.idle, "three_strike": a.three_strike,
-            "closure": a.closure, "llm": a.llm or {}, "temperature_value": a.temperature_value,
+            "closure": a.closure, "llm": _slim_llm(a.llm or {}), "temperature_value": a.temperature_value,
             "trajectory": a.trajectory, "confidence_score": a.confidence_score,
             "confidence_level": a.confidence_level, "confidence_reasons": a.confidence_reasons or [],
             "review_reasons": a.review_reasons or [], "needs_review": a.needs_review,
@@ -90,24 +108,36 @@ def build_payload(session: Session, run_id: int) -> dict[str, list[dict[str, Any
     return out
 
 
-def to_sql(payload: dict[str, list[dict[str, Any]]]) -> str:
-    """Render the payload as INSERT statements (one per table) using jsonb_populate_recordset."""
-    parts = ["begin;"]
+def sql_statements(payload: dict[str, list[dict[str, Any]]], max_bytes: int = 0) -> list[str]:
+    """INSERT statements via jsonb_populate_recordset, optionally split to about max_bytes each."""
+    out: list[str] = []
     for table in TABLE_ORDER:
         rows = payload[table]
         if not rows:
             continue
-        blob = json.dumps(rows, ensure_ascii=False)
-        tag = "j" + secrets.token_hex(6)
-        while f"${tag}$" in blob:
-            tag = "j" + secrets.token_hex(6)
         cols = ", ".join(rows[0].keys())
-        parts.append(
-            f"insert into public.{table} ({cols}) select {cols} from "
-            f"jsonb_populate_recordset(null::public.{table}, ${tag}${blob}${tag}$::jsonb);"
-        )
-    parts.append("commit;")
-    return "\n".join(parts)
+        batches: list[list[dict[str, Any]]] = [[]]
+        size = 0
+        for row in rows:
+            n = len(json.dumps(row, ensure_ascii=False).encode())
+            if max_bytes and batches[-1] and size + n > max_bytes:
+                batches.append([])
+                size = 0
+            batches[-1].append(row)
+            size += n
+        for batch in batches:
+            blob = json.dumps(batch, ensure_ascii=False)
+            tag = "j" + secrets.token_hex(6)
+            while f"${tag}$" in blob:
+                tag = "j" + secrets.token_hex(6)
+            out.append(f"insert into public.{table} ({cols}) select {cols} from "
+                       f"jsonb_populate_recordset(null::public.{table}, ${tag}${blob}${tag}$::jsonb);")
+    return out
+
+
+def to_sql(payload: dict[str, list[dict[str, Any]]]) -> str:
+    """Render the payload as one transaction of INSERT statements."""
+    return "\n".join(["begin;", *sql_statements(payload), "commit;"])
 
 
 class SupabaseClient:
