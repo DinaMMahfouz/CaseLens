@@ -92,15 +92,18 @@ same email.
 
 ### 4. Web app on Vercel
 
-Import the GitHub repo in Vercel with **Root Directory = `frontend`** (framework: Vite).
-Add the environment variables from `frontend/.env.example`:
+Import the GitHub repo in Vercel and leave **Root Directory** at the repo root. The root
+`vercel.json` defines a single public service, `frontend` (Vite), that serves every path.
+The Python backend is deliberately **not** a Vercel service: it handles raw exports, has no
+login of its own, and runs only on the worker machine. Add the environment variables from
+`frontend/.env.example` to the Vercel project:
 
 | Variable | Value |
 |---|---|
 | `VITE_SUPABASE_URL` | `https://ipzlkcejuxilzyphdmgy.supabase.co` |
 | `VITE_SUPABASE_PUBLISHABLE_KEY` | the publishable key (safe in the browser; RLS protects data) |
 
-`frontend/vercel.json` handles SPA routing and security headers.
+The root `vercel.json` also sets SPA routing and security headers. Never add `SUPABASE_SECRET_KEY` to Vercel.
 
 ### Local development
 

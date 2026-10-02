@@ -2,14 +2,12 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
-const apiTarget = process.env.API_URL ?? "http://localhost:8000";
-
+// The web app talks only to Supabase; it has no server-side API of its own.
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
     port: 5173,
     strictPort: true,
-    proxy: { "/api": { target: apiTarget, changeOrigin: true } },
     watch: process.env.CHOKIDAR_USEPOLLING ? { usePolling: true, interval: 500 } : undefined,
   },
 });
