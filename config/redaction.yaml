@@ -1,0 +1,116 @@
+# Redaction layers: strip -> per-case deny-list -> technical regex -> Presidio NER.
+# Every layer can add patterns here; code holds no customer-specific values.
+
+presidio:
+  score_threshold: 0.55
+  entities: [PERSON, ORGANIZATION, EMAIL_ADDRESS, PHONE_NUMBER, IP_ADDRESS, URL,
+             CREDIT_CARD, IBAN_CODE, US_SSN, US_BANK_NUMBER]
+
+# Terms that must never be redacted (technical vocabulary NER tends to mislabel).
+allow_terms:
+  - RADIUS
+  - LDAP
+  - LDAPS
+  - SAML
+  - OIDC
+  - OAuth
+  - MFA
+  - OTP
+  - TLS
+  - SSL
+  - HTTP
+  - HTTPS
+  - API
+  - REST
+  - SDK
+  - VPN
+  - SSO
+  - IdP
+  - DNS
+  - NTP
+  - Kerberos
+  - Active Directory
+  - Windows
+  - Linux
+  - Java
+  - JVM
+  - Tomcat
+  - SQL
+  - Sev1
+  - Sev2
+  - Sev3
+  - Sev4
+  - Support
+  - Engineering
+  - Tier 2
+  - Tier 3
+  - Token
+  - Tokens
+  - MAC
+  - HAR
+  - DN
+  - Bind
+  - Server
+  - Admin
+  - Admins
+  - Agent
+  - Portal
+  - Console
+  - Replica
+  - Appliance
+  - Push
+  - Cookie
+  - Case
+  - Fix
+  - Workaround
+  - Root cause
+  - Next step
+  - Next steps
+  - Log
+  - Logs
+  - Trace
+  - Proxy
+  - Engineering
+  - KB
+  - RHEL
+  - NTP
+  - HR
+  - DR
+  - AD
+  - IT
+  - VPN
+  - Identity Source
+  - Relying Party
+  - Self-Service
+
+# File extensions that look like TLDs; a "domain" ending with one is treated as a file name.
+file_extensions: [log, txt, xml, json, yaml, yml, conf, cfg, ini, properties, out, zip,
+                  gz, tar, csv, xlsx, pdf, png, jpg, har, pcap, exe, dll, jar, war, msi,
+                  sh, ps1, bat, html, js, py, pem, crt, cer, key, p12, pfx, jks, md, sql,
+                  bak, tmp, dmp, evtx]
+
+# Prefixes for customer/account/contract reference IDs.
+reference_id_prefixes: [ACC, ACCT, CTR, CON, CONTRACT, CUST, CUS, SO, PO, INV, ORD, AGR]
+employee_id_prefixes: [EMP, EID, STAFF]
+
+# Words that are never used alone as a company deny-list token.
+company_generic_words: [global, first, national, united, american, general, international,
+                        data, tech, technology, systems, services, solutions, bank, group,
+                        holdings, digital, the, new, north, south, east, west, central]
+company_legal_suffixes: [ltd, limited, inc, incorporated, llc, plc, gmbh, ag, sa, bv, co,
+                         corp, corporation, company, pty, llp, srl, spa, kk, oy, ab, as]
+
+strip:
+  signoff_lines:
+    - "(?i)^\\s*(best|kind|warm|many|warmest)?\\s*(regards|thanks|thank you|cheers|sincerely|br|thx|rgds)[,.!]?\\s*$"
+    - "(?i)^\\s*sent from my \\w+"
+    - "^\\s*--\\s*$"
+  quote_markers:
+    - "(?im)^\\s*On\\b[^\\n]{0,250}(\\n[^\\n]{0,250})?wrote:\\s*$"
+    - "(?im)^\\s*-{2,}\\s*Original Message\\s*-{2,}"
+    - "(?im)^\\s*_{8,}\\s*$"
+    - "(?im)^\\s*From:\\s[^\\n]+\\n(\\s*[^\\n]*\\n){0,3}\\s*(Sent|Date):"
+  disclaimer_keywords: [confidential, intended recipient, privileged, disclaimer,
+                        "if you have received this", notify the sender, unauthorized,
+                        "legally privileged", "may contain"]
+  disclaimer_min_hits: 2

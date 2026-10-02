@@ -1,0 +1,46 @@
+# Overall score /10 = weighted average of included dimensions.
+# Dimensions marked NOT_APPLICABLE or INSUFFICIENT_DATA are excluded and the
+# remaining weights are renormalized.
+
+weights:
+  troubleshooting: 30
+  communication: 20
+  slo: 20
+  idle: 15
+  three_strike: 10
+  temperature_handling: 5
+
+# How a 1-5 rubric score maps to /10.
+#   linear_0_10: 1 -> 0, 3 -> 5, 5 -> 10   ((s - 1) * 2.5)
+#   times_two:   1 -> 2, 3 -> 6, 5 -> 10   (s * 2)
+normalization: linear_0_10
+
+deterministic:
+  slo:            {MET: 10, BREACHED: 0}
+  idle:           {NO_SUPPORT_IDLE: 10, SUPPORT_IDLE: 0}
+  three_strike:   {APPLIED_CORRECTLY: 10, APPLIED_INCORRECTLY: 0}
+
+# Temperature handling is scored from the customer's trajectory (1-5 scale).
+temperature_handling:
+  trajectory_scores:
+    improving: 5
+    stable: 3
+    worsening: 1
+
+# When the two LLM runs differ, the score used is the mean of both runs.
+# When trajectories differ, the worse trajectory is used.
+
+confidence:
+  start: 1.0
+  penalties:
+    run_disagreement: 0.20          # per dimension where the runs differ by > max_score_gap
+    insufficient_evidence: 0.10     # per INSUFFICIENT_EVIDENCE result
+    unsupported_finding: 0.05       # per finding dropped for missing/invalid evidence
+    schema_retry: 0.10              # per retry caused by invalid output
+    missing_key_field: 0.15         # per missing key field (severity, opened_at, owner, comm timestamps)
+    short_case: 0.15                # fewer than min_communications customer-facing communications
+  max_score_gap: 1
+  min_communications: 3
+  levels:
+    HIGH: 0.80
+    MEDIUM: 0.50                    # below MEDIUM = LOW

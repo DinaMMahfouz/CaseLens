@@ -1,0 +1,76 @@
+# Deterministic audit rules. All thresholds are configuration, not code.
+
+slo:
+  initial_response:
+    # Target minutes per severity.
+    targets_minutes:
+      1: 30       # Sev1 = 30 min
+      2: 180      # Sev2 = 3 h
+      3: 240      # Sev3 = 4 h
+      4: 720      # Sev4 = 12 h
+    # Clock per severity: "24x7" or "business_hours".
+    clock:
+      1: 24x7
+      2: 24x7
+      3: 24x7
+      4: 24x7
+    # Used only by severities whose clock is business_hours.
+    business_hours:
+      timezone: UTC
+      days: [mon, tue, wed, thu, fri]
+      start: "09:00"
+      end: "17:00"
+      holidays: []          # ISO dates, e.g. "2026-12-25"
+    # What counts as a response: first customer-facing contact from support.
+    # Outbound emails (excluding auto-acknowledgements) and logged calls count.
+    # Internal notes never count.
+    count_logged_calls_any_direction: true
+
+idle:
+  threshold_days: 5         # a gap strictly greater than this is idle
+  day_type: calendar        # calendar days
+  # The case-opened event (the customer's original request) is treated as the
+  # first inbound communication, so a silent start is measured too.
+  include_case_opened_event: true
+  # Side rule (agreed): a gap is CUSTOMER_SIDE only when the customer asked support
+  # to wait (detected in the most recent inbound communication at/before the gap
+  # start). Otherwise the normal rule applies and the gap is SUPPORT_SIDE.
+  customer_wait_phrases:
+    - please wait
+    - please hold
+    - put the case on hold
+    - keep the case open
+    - i will get back to you
+    - i'll get back to you
+    - we will get back to you
+    - we'll get back to you
+    - i will update you
+    - i'll update you
+    - we will update you
+    - i will let you know
+    - i'll let you know
+    - we will let you know
+    - we'll let you know
+    - i will revert
+    - we will revert
+    - out of office
+    - on leave
+    - on vacation
+    - change freeze
+    - change window
+    - give us some time
+    - give me some time
+    - need some time to test
+
+three_strike:
+  required_attempts: 3
+  # Minimum hours between counted attempts. 0 = no minimum spacing.
+  min_spacing_hours: 0
+  # Agreed: the closure notice email itself counts as one of the attempts.
+  closure_notice_counts_as_attempt: true
+  # Used only when closure_notice_counts_as_attempt is false, to identify the notice.
+  closure_notice_phrases:
+    - closing this case
+    - this case will be closed
+    - we are closing
+    - case has been closed

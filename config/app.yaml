@@ -1,0 +1,51 @@
+# CaseLens - application config.
+# Secrets never live here; they come from environment variables (see .env.example).
+
+data_source:
+  # Default adapter for uploads. "salesforce" is an interface stub only.
+  adapter: excel
+  # Mark the configured data source as synthetic. Only synthetic data may run with
+  # redaction disabled; the app refuses to start otherwise. Uploaded files are ALWAYS
+  # treated as non-synthetic, so uploads are refused while redaction is disabled.
+  synthetic: true
+  fixtures_path: fixtures/synthetic_cases.xlsx
+  uploads_dir: data/uploads
+  output_dir: output
+
+redaction:
+  enabled: true            # ON by default in every environment
+  spacy_model: en_core_web_lg
+
+display:
+  # Account names show as a keyed pseudonym (ACCT-xxxx) unless this is true.
+  show_account_name: false
+  # Real TSE names are shown (agreed): managers filter by TSE and each TSE login is linked to
+  # their name. Customer PII stays redacted. Set false to use keyed pseudonyms (TSE-xxxx).
+  show_engineer_names: true
+
+llm:
+  # mock | anthropic | openai_compatible | ollama
+  provider: mock
+  temperature: 0
+  max_tokens: 2000
+  timeout_seconds: 120
+  runs_per_evaluation: 2   # each LLM evaluation runs twice; disagreement lowers confidence
+  anthropic:
+    model: claude-sonnet-5-5
+    effort: low               # low | medium | high - rubric scoring does not need deep reasoning
+    refusal_fallback: true    # server-side fallback if a safety classifier declines
+    # Current Claude models reject an explicit non-default temperature, so it is not sent;
+    # each audit records temperature as "model default". Determinism is measured instead
+    # by running every evaluation twice (see confidence).
+    send_temperature: false
+    # API key from env ANTHROPIC_API_KEY. Optional base URL override from env ANTHROPIC_BASE_URL.
+  openai_compatible:
+    model: gpt-4o-mini
+    base_url: https://api.openai.com/v1   # override with env OPENAI_BASE_URL
+    # API key from env OPENAI_API_KEY
+  ollama:
+    model: llama3.1:8b
+    base_url: http://localhost:11434      # override with env OLLAMA_BASE_URL
+
+jobs:
+  workers: 1

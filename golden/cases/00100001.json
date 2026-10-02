@@ -1,0 +1,14 @@
+{
+  "case_number": "00100001",
+  "reviewer": "EXAMPLE - replace with a real reviewer",
+  "scored_at": "2026-10-03",
+  "scores": {
+    "troubleshooting": 5,
+    "communication": 5,
+    "temperature": 1,
+    "slo": "MET",
+    "idle": "NO_SUPPORT_IDLE",
+    "three_strike": "NOT_APPLICABLE"
+  },
+  "notes": "Example: textbook case with clear root cause and summary."
+}

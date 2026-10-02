@@ -1,0 +1,12 @@
+.git
+**/node_modules
+frontend/dist
+var
+data
+output
+**/__pycache__
+**/.pytest_cache
+.env
+*.xlsx
+*.csv
+*.db

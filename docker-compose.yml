@@ -1,0 +1,55 @@
+# One command:  docker compose up --build
+#   UI   http://localhost:5173
+#   API  http://localhost:8000/docs
+name: caselens
+
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      CASEQA_ROOT: /workspace
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////workspace/var/caseqa.db}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./config:/workspace/config:ro
+      - ./prompts:/workspace/prompts:ro
+      - ./backend:/workspace/backend
+      - ./fixtures:/workspace/fixtures
+      - ./golden:/workspace/golden:ro
+      - ./data:/workspace/data
+      - ./output:/workspace/output
+      - caseqa-var:/workspace/var
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 20s
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    environment:
+      API_URL: http://backend:8000
+      CHOKIDAR_USEPOLLING: "1"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  caseqa-var:

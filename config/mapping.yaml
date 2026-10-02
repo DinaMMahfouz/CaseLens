@@ -1,0 +1,95 @@
+# Column mapping: source export -> internal model.
+# PROPOSED from the synthetic fixture. Confirm against your real export headers.
+# Every internal field maps to a source column name; unmapped/missing columns are
+# treated as missing fields (never guessed).
+
+# Timezone applied to timestamps that carry no offset. All timestamps are stored in UTC.
+default_timezone: UTC
+# Date formats tried in order (after ISO-8601 and native Excel datetimes).
+date_formats:
+  - "%m/%d/%Y %I:%M %p"
+  - "%m/%d/%Y %H:%M"
+  - "%d-%b-%Y %H:%M %z"
+  - "%d-%b-%Y %H:%M"
+  - "%d.%m.%Y %H:%M"
+  - "%Y/%m/%d %H:%M:%S"
+
+sheets:
+  cases:
+    sheet: Cases
+    columns:
+      case_number: Case Number
+      subject: Subject
+      description: Description
+      severity: Severity
+      status: Status
+      opened_at: Date/Time Opened
+      closed_at: Date/Time Closed
+      owner: Case Owner
+      account_name: Account Name
+      account_number: Account Number
+      contact_name: Contact Name
+      contact_email: Contact Email
+      contact_phone: Contact Phone
+      product: Product
+      resolution: Resolution
+  emails:
+    sheet: Emails
+    columns:
+      case_number: Case Number
+      sent_at: Message Date
+      from_address: From Address
+      to_address: To Address
+      cc_address: CC Address
+      subject: Subject
+      body: Text Body
+      incoming: Is Incoming
+  activities:
+    sheet: Activities
+    columns:
+      case_number: Case Number
+      occurred_at: Activity Date
+      type: Activity Type
+      subject: Subject
+      body: Comments
+      assigned_to: Assigned To
+      visibility: Visibility
+      call_direction: Call Direction
+  status_history:
+    sheet: Case History
+    columns:
+      case_number: Case Number
+      changed_at: Edit Date
+      field: Field
+      old_value: Old Value
+      new_value: New Value
+
+values:
+  severity:
+    1: ["Sev1", "S1", "1", "1 - Critical", "Severity 1", "Critical"]
+    2: ["Sev2", "S2", "2", "2 - High", "Severity 2", "High"]
+    3: ["Sev3", "S3", "3", "3 - Medium", "Severity 3", "Medium"]
+    4: ["Sev4", "S4", "4", "4 - Low", "Severity 4", "Low"]
+  activity_type:
+    call: ["Call", "Phone Call", "Logged Call"]
+    summary: ["Case Summary", "Summary"]
+    handover: ["Handover", "Handover Note"]
+    note: ["Note", "Internal Note", "Comment"]
+  incoming_true: ["true", "yes", "1", "y"]
+  internal_visibility: ["internal", "private", "internal only"]
+  call_direction:
+    inbound: ["inbound", "incoming"]
+    outbound: ["outbound", "outgoing"]
+  closed_statuses: ["Closed", "Resolved", "Closed - Resolved", "Closed - No Response"]
+  history_status_field: ["Status"]
+
+detection:
+  # Used to infer email direction when "Is Incoming" is empty.
+  support_email_domains: ["helpdesk.example"]
+  # Outbound auto-acknowledgements never count as a response.
+  auto_ack:
+    from_local_parts: ["noreply", "no-reply", "donotreply", "do-not-reply"]
+    subject_patterns:
+      - "(?i)\\bauto(matic)?[- ]?(reply|acknowledg)"
+      - "(?i)has been (created|received|logged)"
+      - "(?i)we have received your (request|case)"
