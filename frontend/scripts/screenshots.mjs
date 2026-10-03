@@ -68,10 +68,28 @@ for (const role of ["manager", "tse"]) {
       }
       await page.waitForTimeout(1200); // chart animations
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      // Content checks: tables that scroll sideways inside their panel, raw enum codes, and "mock"
+      // anywhere outside the Run details popover.
+      const scan = await page.evaluate(() => {
+        const scrollers = [...document.querySelectorAll(".overflow-x-auto")]
+          .filter((el) => el.querySelector("table") && el.scrollWidth > el.clientWidth + 1).length;
+        const main = document.querySelector("main")?.cloneNode(true);
+        main?.querySelectorAll("[data-testid=run-details]").forEach((n) => n.remove());
+        const text = main?.textContent ?? "";
+        return {
+          tableScrollers: scrollers,
+          rawCodes: [...new Set(text.match(/\b[A-Z]{2,}(?:_[A-Z]+)+\b/g) ?? [])],
+          mockMentions: (text.match(/mock/gi) ?? []).length,
+          legacyShort: /\bn\/[ad]\b/.test(text),
+        };
+      });
       const file = `${role}-${p.name}-${width}.png`;
       await page.screenshot({ path: join(out, file), fullPage: true });
-      report.push({ role, page: p.name, width, horizontalOverflowPx: Math.max(0, overflow), file });
-      console.log(`${file}${overflow > 0 ? `  (horizontal overflow ${overflow}px)` : ""}`);
+      report.push({ role, page: p.name, width, horizontalOverflowPx: Math.max(0, overflow), ...scan, file });
+      const issues = [overflow > 0 && `page overflow ${overflow}px`, scan.tableScrollers && `${scan.tableScrollers} table(s) scroll sideways`,
+        scan.rawCodes.length && `raw codes ${scan.rawCodes.join(",")}`, scan.mockMentions && `"mock" x${scan.mockMentions}`,
+        scan.legacyShort && "n/a or n/d"].filter(Boolean);
+      console.log(`${file}${issues.length ? `  (${issues.join("; ")})` : ""}`);
     }
   }
   await ctx.close();

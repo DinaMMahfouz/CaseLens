@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
 import { api, type Profile, type Run, type Tse } from "./api";
@@ -6,7 +6,7 @@ import { AppContext } from "./lib/hooks";
 import { configured, initialAuthType, supabase } from "./lib/supabase";
 import { fmtDate } from "./lib/format";
 import { Mark } from "./components/Mark";
-import { Loading } from "./components/ui";
+import { Loading, SyntheticBanner } from "./components/ui";
 import { Login, NoAccess, NotConfigured, SetPassword } from "./pages/Login";
 import Overview from "./pages/Overview";
 import Cases from "./pages/Cases";
@@ -48,17 +48,30 @@ export default function App() {
 function Shell({ profile }: { profile: Profile }) {
   const isManager = profile.role === "manager";
   const [runs, setRuns] = useState<Run[]>([]);
+  const [runsLoading, setRunsLoading] = useState(true);
+  const [runsError, setRunsError] = useState<unknown>(null);
   const [runId, setRunId] = useState<string | undefined>(undefined);
   const [tse, setTse] = useState<string | undefined>(undefined);
   const [tses, setTses] = useState<Tse[]>([]);
 
-  useEffect(() => { api.runs().then(setRuns).catch(() => setRuns([])); }, []);
+  const reloadRuns = useCallback(() => {
+    setRunsLoading(true);
+    api.runs().then((r) => { setRuns(r); setRunsError(null); })
+      .catch((e) => { setRuns([]); setRunsError(e); })
+      .finally(() => setRunsLoading(false));
+  }, []);
+  useEffect(reloadRuns, [reloadRuns]);
   useEffect(() => {
     if (isManager) api.tses().then(setTses).catch(() => setTses([]));
   }, [isManager]);
 
-  const ctx = useMemo(() => ({ profile, isManager, runs, runId, setRunId, tse: isManager ? tse : undefined, setTse, tses }),
-    [profile, isManager, runs, runId, tse, tses]);
+  const selTse = isManager ? tse : undefined;
+  const currentRun = (runId ? runs.find((r) => r.id === runId) : runs[0]) ?? null;
+  const ctx = useMemo(() => ({
+    profile, isManager, runs, runId, setRunId, tse: selTse, setTse, tses,
+    tseName: selTse ? tses.find((t) => t.id === selTse)?.display_name ?? "Selected TSE" : undefined,
+    currentRun, runsLoading, runsError, reloadRuns,
+  }), [profile, isManager, runs, runId, selTse, tses, currentRun, runsLoading, runsError, reloadRuns]);
 
   const nav = isManager
     ? [
@@ -101,13 +114,13 @@ function Shell({ profile }: { profile: Profile }) {
                 <select value={runId ?? ""} onChange={(e) => setRunId(e.target.value || undefined)} aria-label="Select audit run"
                         className="mono text-xs py-1 max-w-[9.5rem] sm:max-w-none">
                   <option value="">Latest</option>
-                  {runs.map((r) => <option key={r.id} value={r.id}>{fmtDate(r.created_at, false)} · {r.total} cases</option>)}
+                  {runs.map((r) => <option key={r.id} value={r.id}>{fmtDate(r.as_of ?? r.created_at, false)} · {r.total} cases{r.source === "fixtures" || r.synthetic ? " · synthetic" : ""}</option>)}
                 </select>
               </label>
               <div className="flex items-center gap-2">
-                <span className="hidden lg:flex flex-col items-end leading-tight">
+                <span className="flex flex-col items-end leading-tight">
                   <span className="text-text">{profile.display_name}</span>
-                  <span className="text-[10px] uppercase tracking-wider text-muted">{isManager ? "Manager" : "TSE"}</span>
+                  <span className="text-[10px] uppercase tracking-wider text-muted" data-testid="user-role">{isManager ? "Manager" : "TSE"}</span>
                 </span>
                 <button className="btn-ghost text-xs py-1" onClick={() => supabase.auth.signOut()}>Sign out</button>
               </div>
@@ -115,6 +128,7 @@ function Shell({ profile }: { profile: Profile }) {
           </div>
         </header>
         <main className="flex-1 mx-auto w-full max-w-[1440px] px-4 sm:px-6 py-6">
+          <div className="mb-4 empty:hidden"><SyntheticBanner run={currentRun} /></div>
           <Routes>
             <Route path="/" element={<Overview />} />
             <Route path="/cases" element={<Cases />} />

@@ -29,6 +29,13 @@ export interface AppCtx {
   tse: string | undefined;
   setTse: (id: string | undefined) => void;
   tses: Tse[];
+  /** Display name of the selected TSE (never the id). */
+  tseName: string | undefined;
+  /** The run in view: the selected one, or the latest. */
+  currentRun: Run | null;
+  runsLoading: boolean;
+  runsError: unknown;
+  reloadRuns: () => void;
 }
 
 export const AppContext = createContext<AppCtx | null>(null);

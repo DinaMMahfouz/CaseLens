@@ -2,21 +2,18 @@ import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, type Audit, type CaseDetail, type Evidence, type Finding, type Item, type LlmDim } from "../api";
 import Timeline from "../components/Timeline";
-import { Empty, ErrorNote, ErrorState, Loading, OutcomePill, Panel, Pill, ReasonPill, ScoreBadge, SeverityPill } from "../components/ui";
+import { AuditStatePill, Empty, ErrorNote, ErrorState, Loading, Panel, Pill, ReasonPill, RunDetails, ScoreBadge, SeverityPill, StatusPill, Time } from "../components/ui";
 import { useAsync, useRun } from "../lib/hooks";
-import { C, NO_DATE_TITLE, fmtDate, fmtDuration, fmtScore, humanize, outcomeColor, plural, runsSummary, scoreColor, temperatureLabel } from "../lib/format";
-import { ACTION_LABEL } from "./Cases";
+import { C, checkColor, fmtDuration, fmtUtc, fmtScore, plural, reviewActionColor, runsSummary, scoreColor, temperatureLabel } from "../lib/format";
+import {
+  CLOCK, CLOSURE_REASON, DIMENSION, DIRECTION, FIELD, FINDING_KIND, ITEM_TYPE, LLM_STATUS, REVIEW_ACTION, TRAJECTORY,
+  checkKind, dimensionInputLabel, lookup, refLabel, type CheckName,
+} from "../lib/labels";
+import { band, bandColor } from "../lib/thresholds";
 
-const KIND_LABEL: Record<string, string> = {
-  top_issues: "Top issues", missed_steps: "Missed steps", repeated_requests: "Repeated requests",
-  shift_points: "Temperature shifts", handover_issues: "Handover issues",
-};
-const DIM_LABEL: Record<string, string> = { troubleshooting: "Troubleshooting", communication: "Communication" };
-
-const FIELD_LABEL: Record<string, string> = {
-  opened_at: "open time", closed_at: "close time", severity: "severity", owner: "case owner",
-  item_timestamps: "message timestamps", call_direction: "call direction",
-};
+const KIND_LABEL = FINDING_KIND;
+const FIELD_LABEL = FIELD;
+const ACTION_LABEL = REVIEW_ACTION;
 
 export default function CaseDetailPage() {
   const { id } = useParams();
@@ -33,8 +30,8 @@ export default function CaseDetailPage() {
     requestAnimationFrame(() => document.getElementById(`msg-${ref}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
   }, []);
 
-  if (loading && !data) return <Loading />;
   if (error) return <ErrorState error={error} onRetry={reload} />;
+  if (loading && !data) return <Loading variant="detail" />;
   if (!data) return <CaseNotFound id={id ?? ""} />;
   const a = data.audit;
 
@@ -42,7 +39,7 @@ export default function CaseDetailPage() {
     <div className="space-y-5">
       <Header c={data} />
       {data.state === "REDACTION_FAILED" ? (
-        <Panel title="Blocked by the leak scanner">
+        <Panel title="Blocked by the redaction check">
           <p className="text-sm text-muted">
             Redaction could not be verified for this case, so it was blocked (fail closed). No text was stored, displayed or
             sent to the LLM. Only metadata is shown. Review the redaction configuration and re-run.
@@ -85,8 +82,8 @@ function Header({ c }: { c: CaseDetail }) {
             <h1 className="mono text-2xl font-semibold tracking-tight">{c.case_number}</h1>
             <SeverityPill sev={c.severity} />
             <Pill color={C.muted}>{c.status || "—"}</Pill>
-            {c.state !== "OK" && <OutcomePill value={c.state} />}
-            {c.review && <Pill color={outcomeColor(c.review.action)}>{ACTION_LABEL[c.review.action]} by {c.review.reviewer_name}</Pill>}
+            {c.state !== "OK" && <AuditStatePill state={c.state} />}
+            {c.review && <Pill color={reviewActionColor(c.review.action)}>{lookup(ACTION_LABEL, c.review.action)} by {c.review.reviewer_name}</Pill>}
           </div>
           <p className="mt-2 text-[15px] max-w-3xl">{c.subject || <span className="text-muted">No subject</span>}</p>
           <dl className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-6 gap-y-2 text-sm">
@@ -97,7 +94,7 @@ function Header({ c }: { c: CaseDetail }) {
             <Meta k="Closed"><DateValue iso={c.closed_at} /></Meta>
           </dl>
           {c.missing_fields.length > 0 && (
-            <div className="mt-3 text-xs text-warning">Missing in source: {c.missing_fields.map((f) => FIELD_LABEL[f] ?? humanize(f)).join(", ")}</div>
+            <div className="mt-3 text-xs text-warning">Missing in source: {c.missing_fields.map((f) => FIELD_LABEL[f] ?? "another field").join(", ")}</div>
           )}
         </div>
         {a && (
@@ -114,7 +111,7 @@ function Header({ c }: { c: CaseDetail }) {
             </div>
             <div>
               <div className="panel-title mb-1.5" title="How complete the source data is for scoring this case.">Data completeness</div>
-              <span className="mono text-lg" style={{ color: (a.data_completeness ?? 0) >= 0.8 ? C.text : C.warning }}>
+              <span className="mono text-lg" style={{ color: band("data_completeness", a.data_completeness) === "good" ? C.text : bandColor(band("data_completeness", a.data_completeness)) }}>
                 {a.data_completeness == null ? "—" : `${Math.round(a.data_completeness * 100)}%`}
               </span>
               {a.is_heuristic && (
@@ -168,8 +165,10 @@ function ScorePanel({ a }: { a: Audit }) {
           {a.dimensions.map((d) => (
             <tr key={d.dimension} className={`border-b border-line/50 last:border-0 ${d.status === "EXCLUDED" ? "text-muted" : ""}`}>
               <td className="py-2">{d.label}</td>
-              <td>{d.input.includes("/5") ? <span className="mono text-xs">{d.input}</span> : <OutcomePill value={d.input} />}</td>
-              <td className="text-right mono" style={{ color: d.status === "SCORED" ? scoreColor(d.score) : undefined }}>{d.status === "SCORED" ? fmtScore(d.score) : <span title={d.note}>excluded</span>}</td>
+              <td>{/^\d\/5$/.test(d.input) ? <span className="mono text-xs">{d.input}</span>
+                : checkKind(d.input) ? <StatusPill check={d.dimension as CheckName} value={d.input} />
+                : <span className="text-xs">{dimensionInputLabel(d.input)}</span>}</td>
+              <td className="text-right mono" style={{ color: d.status === "SCORED" ? scoreColor(d.score) : undefined }}>{d.status === "SCORED" ? fmtScore(d.score) : <span title={d.note} className="underline decoration-dotted underline-offset-2">Excluded</span>}</td>
               <td className="text-right mono">{d.weight}</td>
               <td className="text-right mono">{d.status === "SCORED" ? `${(d.effective_weight * 100).toFixed(0)}%` : "—"}</td>
               <td className="text-right mono">{d.status === "SCORED" ? ((d.score ?? 0) * d.effective_weight).toFixed(2) : "—"}</td>
@@ -183,7 +182,7 @@ function ScorePanel({ a }: { a: Audit }) {
           </tr>
         </tfoot>
       </table>
-      {a.state === "EVAL_FAILED" && <p className="text-xs text-danger mt-2">LLM evaluation failed ({a.error_kind}); no overall score is produced. Deterministic checks remain valid.</p>}
+      {a.state === "EVAL_FAILED" && <p className="text-xs text-danger mt-2">Evaluation failed, so no overall score is produced. Deterministic checks remain valid.</p>}
       <div className="mt-4 pt-3 border-t border-line">
         <div className="panel-title mb-2">Data completeness</div>
         {a.completeness_reasons.length === 0 ? <p className="text-xs text-muted">Source data is complete.</p> : (
@@ -191,17 +190,14 @@ function ScorePanel({ a }: { a: Audit }) {
             {a.completeness_reasons.map((r, i) => (
               <li key={i} className="flex justify-between gap-3">
                 <span>{r.code === "MISSING_FIELD"
-                  ? `Missing ${FIELD_LABEL[r.field ?? ""] ?? humanize(r.field ?? "")}`
+                  ? `Missing ${FIELD_LABEL[r.field ?? ""] ?? "a source field"}`
                   : `Short case: ${plural(r.communications ?? 0, "customer-facing communication")}`}</span>
                 <span className="mono text-xs text-muted">−{Math.round(r.penalty * 100)}%</span>
               </li>
             ))}
           </ul>
         )}
-        <p className="text-[11px] text-muted mt-2">
-          Computed, not self-reported · provider <span className="mono">{a.provider}</span> · model <span className="mono">{a.model}</span> ·
-          temperature <span className="mono">{a.temperature == null ? "model default" : a.temperature}</span>
-        </p>
+        <p className="text-[11px] text-muted mt-2">Computed from the source data, not self-reported by the evaluator.</p>
       </div>
     </Panel>
   );
@@ -209,10 +205,10 @@ function ScorePanel({ a }: { a: Audit }) {
 
 // ------------------------------------------------------------------ deterministic checks
 function Ref({ id, onSelect }: { id: string | null | undefined; onSelect: (r: string) => void }) {
-  if (!id || id === "NOW") return <span className="mono text-xs text-muted">{id ?? "—"}</span>;
+  if (!id || id === "NOW") return <span className="text-xs text-muted">{id === "NOW" ? "now" : "—"}</span>;
   return (
     <button onClick={() => onSelect(id)} className="mono text-xs rounded px-1.5 py-0.5 bg-elevated border border-line hover:border-info text-info">
-      {id}
+      {refLabel(id)}
     </button>
   );
 }
@@ -223,16 +219,16 @@ function ChecksPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void 
     <Panel title="Deterministic checks">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="rounded-lg border border-line p-3">
-          <div className="flex items-center justify-between"><span className="text-sm font-medium">SLO initial response</span><OutcomePill value={s?.status} /></div>
+          <div className="flex items-center justify-between"><span className="text-sm font-medium">SLO initial response</span><StatusPill check="slo" value={s?.status} /></div>
           <div className="mt-3 flex items-baseline gap-2">
-            <span className="mono text-2xl" style={{ color: outcomeColor(s?.status) }}>{fmtDuration(s?.actual_minutes)}</span>
+            <span className="mono text-2xl" style={{ color: checkColor(s?.status) }}>{fmtDuration(s?.actual_minutes)}</span>
             <span className="text-sm text-muted">vs target {fmtDuration(s?.target_minutes)}</span>
           </div>
-          <div className="text-xs text-muted mt-1">Clock {s?.clock ?? "—"} · first response <Ref id={s?.response_ref} onSelect={onSelect} /></div>
+          <div className="text-xs text-muted mt-1">Clock {lookup(CLOCK, s?.clock)} · first response <Ref id={s?.response_ref} onSelect={onSelect} /></div>
           <p className="text-xs text-muted mt-2">{s?.reason}</p>
         </div>
         <div className="rounded-lg border border-line p-3">
-          <div className="flex items-center justify-between"><span className="text-sm font-medium">Idle (&gt; {idle?.threshold_days}d)</span><OutcomePill value={idle?.status} /></div>
+          <div className="flex items-center justify-between"><span className="text-sm font-medium">Idle (&gt; {plural(idle?.threshold_days ?? 0, "day")})</span><StatusPill check="idle" value={idle?.status} /></div>
           {idle?.windows.length ? (
             <ul className="mt-3 space-y-2">
               {idle.windows.map((w, i) => (
@@ -242,7 +238,7 @@ function ChecksPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void 
                     <span className="mono">{fmtDuration(w.duration_hours * 60)}</span>
                     <Ref id={w.start_ref} onSelect={onSelect} /> → <Ref id={w.end_ref} onSelect={onSelect} />
                   </div>
-                  <div className="text-muted mt-0.5">{fmtDate(w.start)} → {w.end_ref === "NOW" ? "now" : fmtDate(w.end)} · {w.reason}</div>
+                  <div className="text-muted mt-0.5"><Time iso={w.start} /> → {w.end_ref === "NOW" ? "now" : <Time iso={w.end} />} · {w.reason}</div>
                 </li>
               ))}
             </ul>
@@ -251,9 +247,9 @@ function ChecksPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void 
             : <p className="text-xs text-muted mt-3">No gaps above the threshold.</p>}
         </div>
         <div className="rounded-lg border border-line p-3">
-          <div className="flex items-center justify-between"><span className="text-sm font-medium">3-strike rule</span><OutcomePill value={ts?.status} /></div>
+          <div className="flex items-center justify-between"><span className="text-sm font-medium">3-strike rule</span><StatusPill check="three_strike" value={ts?.status} /></div>
           <div className="text-xs text-muted mt-3">
-            Closure reason: <span className="text-text">{humanize(ts?.closure_reason ?? a.closure?.reason ?? null)}</span>
+            Closure reason: <span className="text-text">{lookup(CLOSURE_REASON, ts?.closure_reason ?? a.closure?.reason ?? null, "Not determined")}</span>
             {a.closure?.evidence_refs?.length ? <> · {a.closure.evidence_refs.map((r) => <Ref key={r} id={r} onSelect={onSelect} />)}</> : null}
           </div>
           {ts?.last_customer_ref && <div className="text-xs text-muted mt-1">Last customer reply <Ref id={ts.last_customer_ref} onSelect={onSelect} /></div>}
@@ -262,7 +258,7 @@ function ChecksPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void 
               {ts.attempts.map((x, i) => (
                 <li key={x.ref_id} className="flex items-center gap-2">
                   <span className="h-4 w-4 rounded-full bg-accent text-white text-[10px] grid place-items-center font-bold">{i + 1}</span>
-                  <Ref id={x.ref_id} onSelect={onSelect} /><span className="text-muted">{x.kind} · {fmtDate(x.at)}</span>
+                  <Ref id={x.ref_id} onSelect={onSelect} /><span className="text-muted">{lookup(ITEM_TYPE, x.kind)} · <Time iso={x.at} /></span>
                 </li>
               ))}
             </ol>
@@ -279,9 +275,9 @@ function EvidenceChips({ ev, onSelect }: { ev: Evidence[]; onSelect: (r: string)
   return (
     <span className="inline-flex flex-wrap gap-1 ml-1 align-middle">
       {ev.map((e, i) => (
-        <button key={i} onClick={() => onSelect(e.ref_id)} title={e.timestamp ? fmtDate(e.timestamp) : "no timestamp"}
+        <button key={i} onClick={() => onSelect(e.ref_id)} title={e.timestamp ? fmtUtc(e.timestamp) : "No timestamp in source"}
                 className="mono text-[11px] rounded px-1.5 py-0.5 bg-elevated border border-line hover:border-info text-info">
-          {e.ref_id}{e.timestamp ? ` · ${new Date(e.timestamp).toISOString().slice(5, 16).replace("T", " ")}` : ""}
+          {refLabel(e.ref_id)}{e.timestamp ? ` · ${new Date(e.timestamp).toLocaleString(undefined, { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}` : ""}
         </button>
       ))}
     </span>
@@ -292,7 +288,7 @@ function LlmPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void }) 
   const byDim: Record<string, Finding[]> = {};
   a.findings.forEach((f) => { (byDim[f.dimension] ??= []).push(f); });
   return (
-    <Panel title="LLM evaluations" action={<span className="text-xs text-muted">{plural(a.unsupported_count, "unsupported finding")} dropped · {plural(a.retry_count, "retry")}</span>}>
+    <Panel title="Evaluations" action={<RunDetails info={{ ...a, dropped_findings: a.unsupported_count, retries: a.retry_count }} />}>
       <div className="space-y-4">
         {(["troubleshooting", "communication"] as const).map((dim) => {
           const d = a.llm[dim];
@@ -302,16 +298,16 @@ function LlmPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void }) 
           return (
             <div key={dim} className="rounded-lg border border-line p-3">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium">{DIM_LABEL[dim]}</span>
+                <span className="text-sm font-medium">{DIMENSION[dim]}</span>
                 {d.status === "OK" ? (
                   <span className="mono text-sm" style={{ color: scoreColor(((d.score ?? 1) - 1) * 2.5) }}>{d.score}/5</span>
-                ) : <OutcomePill value={d.status} />}
+                ) : <Pill color={C.warning}>{lookup(LLM_STATUS, d.status)}</Pill>}
                 <RunsLabel d={d} disagree={a.agreement_details?.[dim]?.disagreement} />
               </div>
               {d.summary && <p className="text-sm text-muted mt-2">{d.summary}</p>}
               {Object.entries(groups).map(([kind, fs]) => (
                 <div key={kind} className="mt-2.5">
-                  <div className="text-[11px] uppercase tracking-wider text-muted mb-1">{KIND_LABEL[kind] ?? kind}</div>
+                  <div className="text-[11px] uppercase tracking-wider text-muted mb-1">{lookup(KIND_LABEL, kind)}</div>
                   <ul className="space-y-1.5">
                     {fs.map((f) => <li key={f.id} className="text-sm">{f.text}<EvidenceChips ev={f.evidence} onSelect={onSelect} /></li>)}
                   </ul>
@@ -356,7 +352,7 @@ function CustomerTemperature({ a, findings, onSelect }: { a: Audit; findings: Fi
         <p className="text-sm mt-2">
           Started <b>{temperatureLabel(a.temp_start)}</b>, ended <b>{temperatureLabel(a.temp_end)}</b>
           {a.temp_peak != null && a.temp_peak > Math.max(a.temp_start ?? 0, a.temp_end ?? 0) && <>, peaked <b>{temperatureLabel(a.temp_peak)}</b></>}
-          <span className="text-muted"> · {humanize(a.trajectory)}</span>
+          <span className="text-muted"> · {lookup(TRAJECTORY, a.trajectory)}</span>
         </p>
       ) : <p className="text-sm text-muted mt-2">Not enough customer messages to read the temperature.</p>}
       {findings.length > 0 && (
@@ -369,8 +365,7 @@ function CustomerTemperature({ a, findings, onSelect }: { a: Audit; findings: Fi
 }
 
 function DateValue({ iso }: { iso: string | null }) {
-  return iso ? <span title={new Date(iso).toISOString()}>{fmtDate(iso)}</span>
-             : <span title={NO_DATE_TITLE} className="text-muted">—</span>;
+  return <Time iso={iso} className={iso ? "" : "text-muted"} />;
 }
 
 function CaseNotFound({ id }: { id: string }) {
@@ -391,7 +386,7 @@ function Thread({ c, selected, flashKey }: { c: CaseDetail; selected: string | n
     { ref: "DESC", title: "Case description", when: c.opened_at, body: c.description, tone: C.info },
     ...c.items.map((it) => ({
       ref: it.ref_id,
-      title: `${humanize(it.type)}${it.direction ? ` · ${it.direction}` : ""}${it.is_auto_ack ? " · auto-ack" : ""}${it.internal ? " · internal" : ""}`,
+      title: `${lookup(ITEM_TYPE, it.type)}${it.direction ? ` ${DIRECTION[it.direction]}` : ""}${it.is_auto_ack ? " · automatic acknowledgement" : ""}${it.internal ? " · internal" : ""}`,
       when: it.occurred_at, body: [it.subject, it.body].filter(Boolean).join("\n\n"),
       tone: it.internal || !["email", "call"].includes(it.type) ? C.muted : it.direction === "inbound" ? C.info : it.is_auto_ack ? C.muted : C.success,
       item: it,
@@ -407,8 +402,8 @@ function Thread({ c, selected, flashKey }: { c: CaseDetail; selected: string | n
                    className={`rounded-lg border p-3 scroll-mt-24 ${selected === e.ref ? "border-info flash" : "border-line"}`}
                    style={{ boxShadow: `inset 3px 0 0 ${e.tone}` }}>
             <header className="flex items-center gap-2 text-xs text-muted">
-              <span className="mono text-text">{e.ref}</span><span>{e.title}</span>
-              <span className="ml-auto">{e.when ? fmtDate(e.when) : <span className="text-warning">no timestamp</span>}</span>
+              {e.ref !== "DESC" && e.ref !== "RES" && <span className="mono text-text">{e.ref}</span>}<span>{e.title}</span>
+              <span className="ml-auto">{e.when ? <Time iso={e.when} /> : <span className="text-warning">No timestamp</span>}</span>
             </header>
             <pre className="mt-2 whitespace-pre-wrap break-words font-sans text-[13px] leading-relaxed">{e.body || <span className="text-muted">(empty)</span>}</pre>
           </article>
@@ -453,7 +448,7 @@ function ReviewerPanel({ a, reviewer, onDone }: { a: Audit; reviewer: string; on
                 {(["approve", "override", "comment"] as const).map((x) => (
                   <button type="button" key={x} onClick={() => setAction(x)} aria-pressed={action === x}
                           className={`px-3 py-1.5 text-sm ${action === x ? "bg-elevated text-text" : "text-muted hover:text-text"}`}>
-                    {humanize(x)}
+                    {x === "approve" ? "Approve" : x === "override" ? "Override" : "Comment"}
                   </button>
                 ))}
               </div>
@@ -469,7 +464,7 @@ function ReviewerPanel({ a, reviewer, onDone }: { a: Audit; reviewer: string; on
                       placeholder="Do not paste unredacted customer data here." />
           </label>
           <div className="flex items-center gap-3">
-            <button className="btn-primary" disabled={busy}>{busy ? "Saving…" : `Record ${action}`}</button>
+            <button className="btn-primary" disabled={busy}>{busy ? "Saving…" : `Record ${action === "approve" ? "approval" : action}`}</button>
             <span className="text-xs text-muted">Machine overall: <span className="mono">{fmtScore(a.overall)}</span></span>
           </div>
           <ErrorNote error={err} />
@@ -480,10 +475,10 @@ function ReviewerPanel({ a, reviewer, onDone }: { a: Audit; reviewer: string; on
             <ol className="relative border-l border-line ml-2 space-y-3">
               {a.review_actions.map((r) => (
                 <li key={r.id} className="ml-4">
-                  <span className="absolute -left-[5px] mt-1.5 h-2.5 w-2.5 rounded-full" style={{ background: outcomeColor(r.action) }} />
-                  <div className="text-sm"><span className="font-medium">{ACTION_LABEL[r.action]}</span> by {r.reviewer_name}
+                  <span className="absolute -left-[5px] mt-1.5 h-2.5 w-2.5 rounded-full" style={{ background: reviewActionColor(r.action) }} />
+                  <div className="text-sm"><span className="font-medium">{lookup(ACTION_LABEL, r.action)}</span> by {r.reviewer_name}
                     {r.score_override != null && <span className="mono text-warning"> → {r.score_override.toFixed(1)}</span>}</div>
-                  <div className="text-xs text-muted">{fmtDate(r.created_at)}</div>
+                  <div className="text-xs text-muted"><Time iso={r.created_at} /></div>
                   {r.comment && <p className="text-sm mt-1 text-muted whitespace-pre-wrap">{r.comment}</p>}
                 </li>
               ))}
@@ -502,10 +497,10 @@ function ReviewTrail({ a }: { a: Audit }) {
         <ol className="relative border-l border-line ml-2 space-y-3">
           {a.review_actions.map((r) => (
             <li key={r.id} className="ml-4">
-              <span className="absolute -left-[5px] mt-1.5 h-2.5 w-2.5 rounded-full" style={{ background: outcomeColor(r.action) }} />
-              <div className="text-sm"><span className="font-medium">{ACTION_LABEL[r.action]}</span> by {r.reviewer_name}
+              <span className="absolute -left-[5px] mt-1.5 h-2.5 w-2.5 rounded-full" style={{ background: reviewActionColor(r.action) }} />
+              <div className="text-sm"><span className="font-medium">{lookup(ACTION_LABEL, r.action)}</span> by {r.reviewer_name}
                 {r.score_override != null && <span className="mono text-warning"> → {r.score_override.toFixed(1)}</span>}</div>
-              <div className="text-xs text-muted">{fmtDate(r.created_at)}</div>
+              <div className="text-xs text-muted"><Time iso={r.created_at} /></div>
               {r.comment && <p className="text-sm mt-1 text-muted whitespace-pre-wrap">{r.comment}</p>}
             </li>
           ))}

@@ -1,0 +1,9 @@
+{
+  "_comment": "Single source for every status colour in the UI. good = green, warn = amber, bad = red. Rates are 0-1.",
+  "score": { "good_at_least": 8, "warn_at_least": 6 },
+  "slo_compliance": { "good_at_least": 0.9, "warn_at_least": 0.75 },
+  "three_strike_compliance": { "good_at_least": 0.9, "warn_at_least": 0.75 },
+  "review_rate": { "good_at_most": 0.15, "warn_at_most": 0.3 },
+  "data_completeness": { "good_at_least": 0.9, "warn_at_least": 0.8 },
+  "low_sample_below": 5
+}

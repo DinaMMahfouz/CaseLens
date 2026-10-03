@@ -117,7 +117,8 @@ export interface CaseDetail extends CaseRow {
 export interface Dashboard {
   run: Run | null;
   kpis: {
-    cases: number; average_score: number | null; slo_compliance: number | null; review_queue: number;
+    cases: number; average_score: number | null; scored: number; slo_compliance: number | null; slo_n: number;
+    review_queue: number; review_rate: number | null;
     eval_failed: number; redaction_failed: number; support_idle_cases: number;
   };
   score_distribution: { bucket: string; count: number }[];
@@ -245,8 +246,11 @@ export const api = {
       kpis: {
         cases: rows.length,
         average_score: scored.length ? Math.round((scored.reduce((s, x) => s + x, 0) / scored.length) * 100) / 100 : null,
+        scored: scored.length,
         slo_compliance: sloTotal ? sloMet / sloTotal : null,
+        slo_n: sloTotal,
         review_queue: audits.filter((a) => a.needs_review).length,
+        review_rate: audits.length ? audits.filter((a) => a.needs_review).length / audits.length : null,
         eval_failed: audits.filter((a) => a.state === "EVAL_FAILED").length,
         redaction_failed: audits.filter((a) => a.state === "REDACTION_FAILED").length,
         support_idle_cases: audits.filter((a) => a.idle?.status === "SUPPORT_IDLE").length,

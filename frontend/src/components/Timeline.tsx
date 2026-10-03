@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { Audit, Item } from "../api";
 import { C, fmtDate, fmtDuration } from "../lib/format";
+import { ITEM_TYPE } from "../lib/labels";
 
 interface Props {
   items: Item[];
@@ -150,7 +151,7 @@ export default function Timeline({ items, openedAt, closedAt, asOf, audit, selec
           const n = attempts.get(it.ref_id);
           return (
             <g key={it.ref_id} onClick={() => onSelect(it.ref_id)} className="cursor-pointer" tabIndex={0}
-               onKeyDown={(e) => { if (e.key === "Enter") onSelect(it.ref_id); }} role="button" aria-label={`${it.ref_id} ${it.type}`}>
+               onKeyDown={(e) => { if (e.key === "Enter") onSelect(it.ref_id); }} role="button" aria-label={`${it.ref_id} ${ITEM_TYPE[it.type] ?? "Message"}`}>
               {sel && <circle cx={cx} cy={cy} r={13} fill="none" stroke={C.text} strokeOpacity={0.7} />}
               {it.type === "call" ? (
                 <rect x={cx - 6} y={cy - 6} width={12} height={12} transform={`rotate(45 ${cx} ${cy})`} fill={color} />
@@ -166,7 +167,7 @@ export default function Timeline({ items, openedAt, closedAt, asOf, audit, selec
                   <text x={cx + 9} y={cy - 7.5} textAnchor="middle" fontSize={9} fontWeight={700} fill="#fff">{n}</text>
                 </g>
               )}
-              <title>{`${it.ref_id} · ${it.type}${it.is_auto_ack ? " (auto-ack)" : ""} · ${fmtDate(it.occurred_at)}${n ? ` · 3-strike attempt ${n}` : ""}`}</title>
+              <title>{`${it.ref_id} · ${ITEM_TYPE[it.type] ?? "Message"}${it.is_auto_ack ? " (automatic acknowledgement)" : ""} · ${fmtDate(it.occurred_at)}${n ? ` · 3-strike attempt ${n}` : ""}`}</title>
             </g>
           );
         })}
@@ -174,7 +175,7 @@ export default function Timeline({ items, openedAt, closedAt, asOf, audit, selec
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-[11px] text-muted">
         <Key shape="circle" color={C.info} label="Customer email" />
         <Key shape="circle" color={C.success} label="Support email" />
-        <Key shape="ring" color={C.muted} label="Auto-ack" />
+        <Key shape="ring" color={C.muted} label="Automatic acknowledgement" />
         <Key shape="diamond" color={C.success} label="Logged call" />
         <Key shape="square" color={C.muted} label="Note / summary" />
         <Key shape="square" color={C.warning} label="Handover" />

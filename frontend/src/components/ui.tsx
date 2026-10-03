@@ -1,6 +1,8 @@
-import { DataError } from "../api";
-import type { ReactNode } from "react";
-import { C, REASON_META, humanize, outcomeColor, scoreColor, severityColor } from "../lib/format";
+import { DataError, type Run } from "../api";
+import { Fragment, type ReactNode } from "react";
+import { C, auditStateColor, checkColor, fmtDate, fmtUtc, plural, reasonColor, scoreColor, severityColor } from "../lib/format";
+import { AUDIT_STATE, CHECK_NAME, REASONS, checkKind, checkLabel, checkTooltip, lookup, type CheckName } from "../lib/labels";
+import { LOW_SAMPLE_BELOW, THRESHOLD_LEGEND, isLowSample } from "../lib/thresholds";
 
 export function Pill({ color, children, title, solid = false }: { color: string; children: ReactNode; title?: string; solid?: boolean }) {
   return (
@@ -19,22 +21,39 @@ export function Pill({ color, children, title, solid = false }: { color: string;
 }
 
 export const SeverityPill = ({ sev }: { sev: number | null }) => (
-  <Pill color={severityColor(sev)}>
+  <Pill color={severityColor(sev)} title={sev ? `Severity ${sev}` : "Severity missing in source"}>
     <span className="mono">{sev ? `SEV${sev}` : "SEV?"}</span>
   </Pill>
 );
 
-export const OutcomePill = ({ value, title }: { value: string | null | undefined; title?: string }) => (
-  <Pill color={outcomeColor(value)} title={title}>{humanize(value)}</Pill>
+/** Deterministic check outcome in the shared vocabulary, with a tooltip that defines it. */
+export const StatusPill = ({ check, value }: { check: CheckName; value: string | null | undefined }) =>
+  value ? <Pill color={checkColor(value)} title={checkTooltip(check, value)}>{checkLabel(value)}</Pill>
+        : <span className="text-muted" title="Not evaluated">—</span>;
+
+export const AuditStatePill = ({ state }: { state: string | null | undefined }) => (
+  <Pill color={auditStateColor(state)}>{lookup(AUDIT_STATE, state)}</Pill>
 );
 
 export const ReasonPill = ({ code }: { code: string }) => {
-  const m = REASON_META[code] ?? { label: humanize(code), color: C.muted, hint: "" };
-  return <Pill color={m.color} title={m.hint}>{m.label}</Pill>;
+  const m = REASONS[code];
+  return <Pill color={reasonColor(code)} title={m?.hint}>{m?.label ?? "Other reason"}</Pill>;
 };
 
-export function ScoreBadge({ score, size = "md" }: { score: number | null | undefined; size?: "md" | "lg" }) {
-  const color = scoreColor(score);
+/** Low-sample marker: shows n and a muted tag; callers must also drop status colouring. */
+export function SampleTag({ n, always = false }: { n: number; always?: boolean }) {
+  const low = isLowSample(n);
+  if (!low && !always) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] text-muted" title={low ? `Fewer than ${LOW_SAMPLE_BELOW} cases: not enough to judge, so no status colour.` : undefined}>
+      <span className="mono">n={n}</span>
+      {low && <span className="rounded px-1 border border-line">low sample</span>}
+    </span>
+  );
+}
+
+export function ScoreBadge({ score, size = "md", neutral = false }: { score: number | null | undefined; size?: "md" | "lg"; neutral?: boolean }) {
+  const color = neutral ? C.text : scoreColor(score);
   if (size === "lg") {
     return (
       <div className="flex items-baseline gap-1">
@@ -53,11 +72,17 @@ export function ScoreBadge({ score, size = "md" }: { score: number | null | unde
   );
 }
 
+/** Local time on screen, UTC on hover. A missing date is "—" with an explanation. */
+export function Time({ iso, withTime = true, className = "" }: { iso: string | null | undefined; withTime?: boolean; className?: string }) {
+  if (!iso) return <span title="No date in source" className={className}>—</span>;
+  return <time dateTime={iso} title={fmtUtc(iso)} className={className}>{fmtDate(iso, withTime)}</time>;
+}
+
 export function Panel({ title, action, children, className = "" }: { title?: ReactNode; action?: ReactNode; children: ReactNode; className?: string }) {
   return (
     <section className={`panel p-4 ${className}`}>
       {(title || action) && (
-        <header className="flex items-center justify-between mb-3 gap-3">
+        <header className="flex items-center justify-between mb-3 gap-3 flex-wrap">
           {title && <h2 className="panel-title">{title}</h2>}
           {action}
         </header>
@@ -67,8 +92,13 @@ export function Panel({ title, action, children, className = "" }: { title?: Rea
   );
 }
 
-export function Empty({ children }: { children: ReactNode }) {
-  return <div className="text-sm text-muted py-8 text-center">{children}</div>;
+export function Empty({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
+  return (
+    <div className="text-sm text-muted py-8 text-center" role="status">
+      <p>{children}</p>
+      {hint && <p className="text-xs mt-1.5">{hint}</p>}
+    </div>
+  );
 }
 
 /** Only DataError messages (written by us) are shown; anything else becomes a generic message,
@@ -93,6 +123,117 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => 
   );
 }
 
-export function Loading() {
-  return <div className="text-sm text-muted py-10 text-center animate-pulse">Loading…</div>;
+// ------------------------------------------------------------------ skeletons
+export function Skeleton({ className = "" }: { className?: string }) {
+  return <div className={`rounded-md bg-elevated animate-pulse ${className}`} aria-hidden />;
+}
+
+export function Loading({ variant = "page" }: { variant?: "page" | "table" | "detail" }) {
+  return (
+    <div role="status" aria-label="Loading" className="space-y-4">
+      <span className="sr-only">Loading…</span>
+      {variant === "page" && (
+        <>
+          <Skeleton className="h-7 w-64" />
+          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-20" />)}</div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4"><Skeleton className="h-64 lg:col-span-2" /><Skeleton className="h-64" /></div>
+        </>
+      )}
+      {variant === "table" && (
+        <div className="panel p-3 space-y-2.5">{Array.from({ length: 8 }, (_, i) => <Skeleton key={i} className="h-7" />)}</div>
+      )}
+      {variant === "detail" && (
+        <>
+          <Skeleton className="h-36" />
+          <Skeleton className="h-24" />
+          <div className="grid grid-cols-1 xl:grid-cols-[1fr_460px] gap-5"><Skeleton className="h-80" /><Skeleton className="h-80" /></div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ banners & popovers
+export function SyntheticBanner({ run }: { run: Run | null | undefined }) {
+  if (!run || (run.source !== "fixtures" && !run.synthetic)) return null;
+  return (
+    <div className="rounded-lg px-3 py-2 text-sm flex items-center gap-2" role="note" data-testid="synthetic-banner"
+         style={{ color: C.warning, background: `color-mix(in oklab, ${C.warning} 12%, transparent)`, boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${C.warning} 40%, transparent)` }}>
+      <span className="font-semibold">Synthetic data</span>
+      <span className="text-muted">This run was generated from test fixtures, not real support cases.</span>
+    </div>
+  );
+}
+
+function Popover({ label, children, align = "right", testId }: { label: ReactNode; children: ReactNode; align?: "left" | "right"; testId?: string }) {
+  return (
+    <details className="relative inline-block text-left group" data-testid={testId}>
+      <summary className="list-none cursor-pointer select-none text-xs text-muted hover:text-text inline-flex items-center gap-1 [&::-webkit-details-marker]:hidden">
+        {label}<span className="text-[9px] transition-transform group-open:rotate-180" aria-hidden>▼</span>
+      </summary>
+      <div className={`absolute z-40 mt-2 w-80 max-w-[calc(100vw-2rem)] panel p-3 shadow-xl text-xs ${align === "right" ? "right-0" : "left-0"}`}>
+        {children}
+      </div>
+    </details>
+  );
+}
+
+export interface RunDetailsInfo {
+  provider: string; model: string; config_hash: string; temperature: number | null;
+  prompt_versions?: Record<string, string>; dropped_findings?: number; retries?: number;
+}
+
+/** The only place provider and model identifiers are shown. */
+export function RunDetails({ info, align }: { info: RunDetailsInfo; align?: "left" | "right" }) {
+  const rows: [string, ReactNode][] = [
+    ["Provider", info.provider], ["Model", info.model], ["Config hash", info.config_hash || "—"],
+    ["Temperature", info.temperature == null ? "Model default" : String(info.temperature)],
+  ];
+  if (info.dropped_findings != null) rows.push(["Dropped findings", plural(info.dropped_findings, "unsupported finding")]);
+  if (info.retries != null) rows.push(["Retries", plural(info.retries, "retry")]);
+  Object.entries(info.prompt_versions ?? {}).forEach(([k, v]) => rows.push([`Prompt · ${k}`, v]));
+  return (
+    <Popover label="Run details" align={align} testId="run-details">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5">
+        {rows.map(([k, v]) => (<Fragment key={k}><dt className="text-muted">{k}</dt><dd className="mono break-all">{v}</dd></Fragment>))}
+      </dl>
+    </Popover>
+  );
+}
+
+export function ThresholdLegend({ align }: { align?: "left" | "right" }) {
+  return (
+    <Popover label="Colour thresholds" align={align} testId="threshold-legend">
+      <table className="w-full">
+        <thead className="text-muted text-left"><tr><th className="font-medium pb-1">Metric</th>
+          <th className="font-medium pb-1" style={{ color: C.success }}>Green</th>
+          <th className="font-medium pb-1" style={{ color: C.warning }}>Amber</th>
+          <th className="font-medium pb-1" style={{ color: C.danger }}>Red</th></tr></thead>
+        <tbody>
+          {THRESHOLD_LEGEND.map((r) => (
+            <tr key={r.name} className="border-t border-line/60"><td className="py-1 pr-2">{r.name}</td>
+              <td className="mono">{r.good}</td><td className="mono">{r.warn}</td><td className="mono">{r.bad}</td></tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-muted mt-2">A metric is never green while a related breach or review rate is red. Fewer than {LOW_SAMPLE_BELOW} cases: no colour, marked “low sample”.</p>
+    </Popover>
+  );
+}
+
+/** Compact SLO / Idle / 3-strike cell: lists only what needs attention, tooltip has all three. */
+export function ChecksCell({ slo, idle, strike }: { slo: string | null; idle: string | null; strike: string | null }) {
+  const all: [CheckName, string | null][] = [["slo", slo], ["idle", idle], ["three_strike", strike]];
+  const title = all.map(([c, v]) => `${CHECK_NAME[c]}: ${checkLabel(v)}`).join("\n");
+  const flagged = all.filter(([, v]) => { const k = checkKind(v); return k === "breached" || k === "insufficient"; });
+  if (!flagged.length) {
+    const any = all.some(([, v]) => v);
+    return <span className="text-xs text-muted" title={title}>{any ? "All met" : "—"}</span>;
+  }
+  const SHORT_NAME: Record<CheckName, string> = { slo: "SLO", idle: "Idle", three_strike: "3-strike" };
+  return (
+    <div className="flex flex-wrap gap-1" title={title}>
+      {flagged.map(([c, v]) => <Pill key={c} color={checkColor(v)}>{SHORT_NAME[c]} · {checkLabel(v)}</Pill>)}
+    </div>
+  );
 }

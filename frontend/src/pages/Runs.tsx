@@ -1,9 +1,10 @@
-import { Empty, Panel, Pill } from "../components/ui";
+import { Empty, ErrorState, Loading, Panel, Pill, RunDetails, Time } from "../components/ui";
 import { useRun } from "../lib/hooks";
-import { C, fmtDate } from "../lib/format";
+import { C } from "../lib/format";
+import { RUN_SOURCE, lookup } from "../lib/labels";
 
 export default function Runs() {
-  const { runs } = useRun();
+  const { runs, runsLoading, runsError, reloadRuns } = useRun();
   return (
     <div className="space-y-5">
       <div>
@@ -18,26 +19,28 @@ export default function Runs() {
         </ol>
       </Panel>
       <Panel title="Pushed runs">
-        {runs.length === 0 ? <Empty>No runs pushed yet.</Empty> : (
-          <div className="overflow-x-auto">
+        {runsError ? <ErrorState error={runsError} onRetry={reloadRuns} /> : runsLoading ? <Loading variant="table" /> : runs.length === 0 ? <Empty>No runs pushed yet.</Empty> : (
+          <div>
             <table className="w-full text-sm">
               <thead className="text-xs text-muted text-left">
                 <tr className="border-b border-line">
-                  <th className="py-2 font-medium">Pushed</th><th className="font-medium">As of</th><th className="font-medium">Source</th>
+                  <th className="py-2 font-medium">As of</th><th className="font-medium">Pushed</th><th className="font-medium">Source</th>
                   <th className="font-medium text-right">Cases</th><th className="font-medium text-right">Failed</th>
-                  <th className="font-medium pl-4">Provider / model</th><th className="font-medium">Config</th>
+                  <th className="font-medium pl-4">Details</th>
                 </tr>
               </thead>
               <tbody>
                 {runs.map((r) => (
                   <tr key={r.id} className="border-b border-line/60 last:border-0">
-                    <td className="py-2.5">{fmtDate(r.created_at)}</td>
-                    <td className="text-muted">{fmtDate(r.as_of)}</td>
-                    <td>{r.source} {r.synthetic && <Pill color={C.muted}>synthetic</Pill>}</td>
+                    <td className="py-2.5"><Time iso={r.as_of} /></td>
+                    <td className="text-muted"><Time iso={r.created_at} /></td>
+                    <td className="space-x-1.5">
+                      <span>{lookup(RUN_SOURCE, r.source)}</span>
+                      {(r.synthetic || r.source === "fixtures") && <Pill color={C.warning}>Synthetic data</Pill>}
+                    </td>
                     <td className="text-right mono">{r.total}</td>
                     <td className="text-right mono" style={{ color: r.failed ? C.warning : undefined }}>{r.failed}</td>
-                    <td className="pl-4 mono text-xs">{r.provider} · {r.model}</td>
-                    <td className="mono text-xs text-muted" title={Object.entries(r.prompt_versions).map(([k, v]) => `${k}: ${v}`).join("\n")}>{r.config_hash}</td>
+                    <td className="pl-4"><RunDetails info={r} align="right" /></td>
                   </tr>
                 ))}
               </tbody>

@@ -12,6 +12,13 @@ from app.domain.models import Direction, RedactedCase, TimelineItem
 from app.rules.results import Attempt, ClosureClassification, ThreeStrikeResult
 
 
+
+# Plain-language explanation when the rule does not apply (never the raw closure code).
+CLOSURE_TEXT = {
+    "CUSTOMER_CONFIRMED": "the customer confirmed the resolution, so the rule does not apply",
+    "OTHER": "closed for a reason other than customer non-response, so the rule does not apply",
+}
+
 def _inbound(i: TimelineItem) -> bool:
     return i.customer_facing and not i.is_auto_ack and i.direction == Direction.INBOUND
 
@@ -34,7 +41,7 @@ def evaluate_three_strike(case: RedactedCase, closure: Optional[ClosureClassific
         return res
     res.closure_reason = closure.reason
     if closure.reason != "CUSTOMER_NON_RESPONSE":
-        res.reason = f"closure reason is {closure.reason}"
+        res.reason = CLOSURE_TEXT.get(closure.reason, "closed for a reason other than customer non-response")
         return res
     if case.closed_at is None:
         res.status = "INSUFFICIENT_DATA"

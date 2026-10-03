@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type CaseRow } from "../api";
-import { Empty, ErrorNote, Loading, OutcomePill, Pill, ReasonPill, ScoreBadge, SeverityPill } from "../components/ui";
+import { AuditStatePill, ChecksCell, Empty, ErrorState, Loading, Pill, ReasonPill, ScoreBadge, SeverityPill, Time } from "../components/ui";
 import { useAsync, useRun } from "../lib/hooks";
-import { C, NO_DATE_TITLE, REASON_META, ageDays, fmtDate, humanize, outcomeColor, plural, severityColor } from "../lib/format";
+import { C, NO_DATE_TITLE, ageDays, plural, reviewActionColor, severityColor } from "../lib/format";
+import { AUDIT_STATE, REASONS, REVIEW_ACTION } from "../lib/labels";
+import { band, bandColor } from "../lib/thresholds";
 
 type SortKey = "case_number" | "severity" | "overall" | "opened_at";
 
 export default function Cases() {
-  const { runId, tse, isManager, profile } = useRun();
+  const { runId, tse, tseName, isManager, profile } = useRun();
   const nav = useNavigate();
   const [sp, setSp] = useSearchParams();
   const [q, setQ] = useState(sp.get("q") ?? "");
@@ -23,7 +25,7 @@ export default function Cases() {
     order: (sp.get("order") as "asc" | "desc") ?? "asc",
   };
   const key = sp.toString();
-  const { data, error, loading } = useAsync(
+  const { data, error, loading, reload } = useAsync(
     () => api.cases({ run_id: runId, tse, ...filters, q: sp.get("q") ?? "" }),
     [runId, tse, key],
   );
@@ -62,7 +64,7 @@ export default function Cases() {
     <div className="space-y-4">
       <div className="flex items-end justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">{isManager ? (tse ? `Cases · ${tse}` : "Cases · all TSEs") : `My cases · ${profile.display_name}`}</h1>
+          <h1 className="text-xl font-semibold tracking-tight">{isManager ? (tse ? `Cases · ${tseName}` : "Cases · all TSEs") : `My cases · ${profile.display_name}`}</h1>
           <p className="text-sm text-muted mt-0.5">{data ? `${data.total} case${data.total === 1 ? "" : "s"}` : " "} {activeCount ? `· ${activeCount} filter${activeCount > 1 ? "s" : ""} active` : ""}</p>
         </div>
         {activeCount > 0 && <button className="btn-ghost" onClick={() => { setQ(""); setSp(new URLSearchParams(), { replace: true }); }}>Clear filters</button>}
@@ -94,7 +96,7 @@ export default function Cases() {
         </div>
         <select value={filters.review_reason} onChange={(e) => set("review_reason", e.target.value)} aria-label="Review reason">
           <option value="">Any review reason</option>
-          {Object.entries(REASON_META).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
+          {Object.entries(REASONS).map(([k, m]) => <option key={k} value={k}>{m.label}</option>)}
         </select>
         <select value={filters.status} onChange={(e) => set("status", e.target.value)} aria-label="Status">
           <option value="">Any status</option>
@@ -102,12 +104,16 @@ export default function Cases() {
         </select>
         <select value={filters.state} onChange={(e) => set("state", e.target.value)} aria-label="Audit state">
           <option value="">Any audit state</option>
-          {["OK", "EVAL_FAILED", "REDACTION_FAILED"].map((s) => <option key={s} value={s}>{humanize(s)}</option>)}
+          {Object.entries(AUDIT_STATE).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </select>
       </div>
 
-      <ErrorNote error={error} />
-      {loading && !data ? <Loading /> : !data?.rows.length ? <Empty>No cases match these filters.</Empty> : (
+      {error ? <ErrorState error={error} onRetry={reload} />
+        : loading && !data ? <Loading variant="table" />
+        : !data?.rows.length ? (
+          <div className="panel"><Empty hint={activeCount ? "Try clearing a filter." : "Pick another run in the top bar."}>
+            {activeCount ? "No cases match these filters." : "No cases in this run."}</Empty></div>
+        ) : (
         <div className="panel overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="text-left text-xs text-muted">
@@ -116,14 +122,12 @@ export default function Cases() {
                 <Th onClick={() => sortBy("severity")} active={filters.sort === "severity"} order={filters.order}>Sev</Th>
                 <th className="px-3 py-2.5 font-medium">Subject</th>
                 <th className="px-3 py-2.5 font-medium">TSE</th>
-                <th className="px-3 py-2.5 font-medium">Status</th>
-                <Th onClick={() => sortBy("opened_at")} active={filters.sort === "opened_at"} order={filters.order}>Opened</Th>
+                <th className="px-3 py-2.5 font-medium hidden 2xl:table-cell">Status</th>
+                <Th onClick={() => sortBy("opened_at")} active={filters.sort === "opened_at"} order={filters.order} className="hidden 2xl:table-cell">Opened</Th>
                 <th className="px-3 py-2.5 font-medium" title="Closed date, or age in days for open cases">Closed / Age</th>
                 <Th onClick={() => sortBy("overall")} active={filters.sort === "overall"} order={filters.order}>Score</Th>
-                <th className="px-3 py-2.5 font-medium">SLO</th>
-                <th className="px-3 py-2.5 font-medium">Idle</th>
-                <th className="px-3 py-2.5 font-medium">3-strike</th>
-                <th className="px-3 py-2.5 font-medium" title="How complete the source data is for scoring">Data</th>
+                <th className="px-3 py-2.5 font-medium" title="SLO initial response, Idle and 3-strike rule. Only checks that are breached or lack data are listed.">Checks</th>
+                <th className="px-3 py-2.5 font-medium hidden 2xl:table-cell" title="How complete the source data is for scoring">Data</th>
                 <th className="px-3 py-2.5 font-medium">Review</th>
               </tr>
             </thead>
@@ -137,9 +141,9 @@ export default function Cases() {
   );
 }
 
-function Th({ children, onClick, active, order }: { children: string; onClick: () => void; active: boolean; order: string }) {
+function Th({ children, onClick, active, order, className = "" }: { children: string; onClick: () => void; active: boolean; order: string; className?: string }) {
   return (
-    <th className="px-3 py-2.5 font-medium" aria-sort={active ? (order === "asc" ? "ascending" : "descending") : "none"}>
+    <th className={`px-3 py-2.5 font-medium ${className}`} aria-sort={active ? (order === "asc" ? "ascending" : "descending") : "none"}>
       <button onClick={onClick} className={`inline-flex items-center gap-1 hover:text-text ${active ? "text-text" : ""}`}>
         {children}<span className="text-[10px]">{active ? (order === "asc" ? "▲" : "▼") : ""}</span>
       </button>
@@ -148,8 +152,7 @@ function Th({ children, onClick, active, order }: { children: string; onClick: (
 }
 
 export function DateCell({ iso }: { iso: string | null }) {
-  return iso ? <span title={new Date(iso).toISOString()}>{fmtDate(iso, false)}</span>
-             : <span title={NO_DATE_TITLE}>—</span>;
+  return <Time iso={iso} withTime={false} />;
 }
 
 /** Closed cases show their close date; open cases show their age; a missing date is "—". */
@@ -161,18 +164,7 @@ export function ClosedOrAge({ r, now }: { r: Pick<CaseRow, "status" | "closed_at
   return age == null ? <span title={NO_DATE_TITLE}>—</span> : <span title="Open case age">{plural(age, "day")} open</span>;
 }
 
-export const ACTION_LABEL: Record<string, string> = { approve: "Approved", override: "Overridden", comment: "Commented" };
-
-const SHORT: Record<string, string> = {
-  MET: "Met", BREACHED: "Breach", INSUFFICIENT_DATA: "n/d", NO_SUPPORT_IDLE: "OK", SUPPORT_IDLE: "Idle",
-  APPLIED_CORRECTLY: "OK", APPLIED_INCORRECTLY: "Wrong", NOT_APPLICABLE: "n/a",
-};
-
-function Mini({ v }: { v: string | null }) {
-  if (!v) return <span className="text-muted">—</span>;
-  const color = v === "NOT_APPLICABLE" ? C.muted : outcomeColor(v);
-  return <Pill color={color} title={humanize(v)}>{SHORT[v] ?? humanize(v)}</Pill>;
-}
+export const ACTION_LABEL = REVIEW_ACTION;
 
 function Row({ r, onOpen }: { r: CaseRow; onOpen: () => void }) {
   return (
@@ -183,22 +175,20 @@ function Row({ r, onOpen }: { r: CaseRow; onOpen: () => void }) {
     >
       <td className="px-3 py-2.5"><Link to={`/cases/${r.id}`} onClick={(e) => e.stopPropagation()} className="mono text-info hover:underline">{r.case_number}</Link></td>
       <td className="px-3"><SeverityPill sev={r.severity} /></td>
-      <td className="px-3 max-w-[340px]"><div className="truncate" title={r.subject}>{r.state === "REDACTION_FAILED" ? <span className="text-danger">Blocked by leak scanner</span> : r.subject}</div></td>
+      <td className="px-3 max-w-[190px] xl:max-w-[300px] 2xl:max-w-[340px]"><div className="truncate" title={r.subject}>{r.state === "REDACTION_FAILED" ? <span className="text-danger">Blocked by redaction check</span> : r.subject}</div></td>
       <td className="px-3 text-xs text-muted whitespace-nowrap">{r.owner || "—"}</td>
-      <td className="px-3 text-muted whitespace-nowrap">{r.status}</td>
-      <td className="px-3 text-muted whitespace-nowrap"><DateCell iso={r.opened_at} /></td>
+      <td className="px-3 text-muted whitespace-nowrap hidden 2xl:table-cell">{r.status}</td>
+      <td className="px-3 text-muted whitespace-nowrap hidden 2xl:table-cell"><DateCell iso={r.opened_at} /></td>
       <td className="px-3 text-muted whitespace-nowrap" data-testid="closed-cell"><ClosedOrAge r={r} /></td>
-      <td className="px-3">{r.state === "OK" ? <ScoreBadge score={r.overall} /> : <OutcomePill value={r.state} />}</td>
-      <td className="px-3"><Mini v={r.slo} /></td>
-      <td className="px-3"><Mini v={r.idle} /></td>
-      <td className="px-3"><Mini v={r.three_strike} /></td>
-      <td className="px-3 mono text-xs" style={{ color: (r.data_completeness ?? 1) < 0.8 ? C.warning : C.muted }}>
+      <td className="px-3">{r.state === "OK" ? <ScoreBadge score={r.overall} /> : <AuditStatePill state={r.state} />}</td>
+      <td className="px-3"><ChecksCell slo={r.slo} idle={r.idle} strike={r.three_strike} /></td>
+      <td className="px-3 mono text-xs hidden 2xl:table-cell" style={{ color: band("data_completeness", r.data_completeness) === "good" ? C.muted : bandColor(band("data_completeness", r.data_completeness)) }}>
         {r.data_completeness == null ? "—" : `${Math.round(r.data_completeness * 100)}%`}
       </td>
       <td className="px-3">
-        <div className="flex flex-wrap gap-1 max-w-[220px]">
+        <div className="flex flex-wrap gap-1 max-w-[200px]">
           {r.review_reasons.map((x) => <ReasonPill key={x} code={x} />)}
-          {r.review && <Pill color={outcomeColor(r.review.action)} title={`by ${r.review.reviewer_name}`}>{ACTION_LABEL[r.review.action] ?? r.review.action}</Pill>}
+          {r.review && <Pill color={reviewActionColor(r.review.action)} title={`by ${r.review.reviewer_name}`}>{ACTION_LABEL[r.review.action] ?? "Reviewed"}</Pill>}
         </div>
       </td>
     </tr>

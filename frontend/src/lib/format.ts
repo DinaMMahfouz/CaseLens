@@ -1,4 +1,6 @@
 // Formatting + semantic color helpers. Colors are CSS variables from index.css.
+import { REASONS, checkKind } from "./labels";
+import { band, bandColor } from "./thresholds";
 
 export const C = {
   bg: "var(--color-bg)",
@@ -18,43 +20,32 @@ export const C = {
 export const severityColor = (sev: number | null | undefined) =>
   sev === 1 ? C.danger : sev === 2 ? C.high : sev === 3 ? C.warning : sev === 4 ? C.info : C.muted;
 
-export const scoreColor = (s: number | null | undefined) =>
-  s == null ? C.muted : s >= 7 ? C.success : s >= 4 ? C.warning : C.danger;
+export const scoreColor = (s: number | null | undefined) => bandColor(band("score", s));
 
-export const outcomeColor = (o: string | null | undefined) => {
-  switch (o) {
-    case "MET": case "APPLIED_CORRECTLY": case "NO_SUPPORT_IDLE": case "HIGH": case "OK": case "approve":
-      return C.success;
-    case "BREACHED": case "APPLIED_INCORRECTLY": case "SUPPORT_IDLE": case "LOW":
-    case "EVAL_FAILED": case "REDACTION_FAILED":
-      return C.danger;
-    case "MEDIUM": case "INSUFFICIENT_DATA": case "INSUFFICIENT_EVIDENCE": case "override":
-      return C.warning;
-    default:
-      return C.muted;
-  }
+/** Colour for a deterministic-check outcome (Met / Breached / Insufficient data / Not applicable). */
+export const checkColor = (raw: string | null | undefined) => {
+  const k = checkKind(raw);
+  return k === "met" ? C.success : k === "breached" ? C.danger : k === "insufficient" ? C.warning : C.muted;
+};
+export const reviewActionColor = (a: string | null | undefined) =>
+  a === "approve" ? C.success : a === "override" ? C.warning : C.muted;
+export const auditStateColor = (s: string | null | undefined) => (s === "OK" ? C.success : C.danger);
+
+export const reasonColor = (code: string) => {
+  const tone = REASONS[code]?.tone;
+  return tone === "danger" ? C.danger : tone === "high" ? C.high : tone === "warning" ? C.warning : C.muted;
 };
 
-export const REASON_META: Record<string, { label: string; color: string; hint: string }> = {
-  REDACTION_FAILED: { label: "Redaction failed", color: C.danger, hint: "Leak scanner blocked the case; nothing was evaluated." },
-  EVAL_FAILED: { label: "Eval failed", color: C.danger, hint: "LLM output stayed invalid after one retry." },
-  RULE_BREACH: { label: "Rule breach", color: C.high, hint: "SLO breached or 3-strike applied incorrectly." },
-  HOT_CUSTOMER: { label: "Hot customer", color: C.high, hint: "Customer peaked Angry, or ended hotter than they started." },
-  LOW_SCORE: { label: "Low score", color: C.warning, hint: "Overall score below threshold." },
-  INSUFFICIENT_DATA: { label: "Insufficient data", color: C.warning, hint: "A check was excluded for missing source data, or data completeness is below 80%." },
-  EVALUATOR_DISAGREEMENT: { label: "Evaluator disagreement", color: C.warning, hint: "Evaluation runs disagree (score range ≥ 2 or < 75% agree)." },
-};
-
-export const humanize = (s: string | null | undefined) =>
-  (s ?? "—").toLowerCase().replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase());
-
+/** Display times are in the viewer's local timezone; <Time> shows the UTC instant on hover. */
 export function fmtDate(iso: string | null | undefined, withTime = true) {
   if (!iso) return "—";
-  const d = new Date(iso);
-  return d.toLocaleString(undefined, {
+  return new Date(iso).toLocaleString(undefined, {
     year: "numeric", month: "short", day: "2-digit",
-    ...(withTime ? { hour: "2-digit", minute: "2-digit", timeZone: "UTC", timeZoneName: "short" } : { timeZone: "UTC" }),
+    ...(withTime ? { hour: "2-digit", minute: "2-digit", timeZoneName: "short" } : {}),
   });
+}
+export function fmtUtc(iso: string) {
+  return new Date(iso).toISOString().replace("T", " ").slice(0, 16) + " UTC";
 }
 
 export function fmtDuration(minutes: number | null | undefined) {

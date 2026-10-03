@@ -4,6 +4,10 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
+_TEMP_WORD = {1: "Calm", 2: "Neutral", 3: "Frustrated", 4: "Angry", 5: "Angry"}
+_DIM_WORD = {"slo": "SLO initial response", "idle": "Idle", "three_strike": "3-strike rule"}
+
+
 def route(state: str, overall: Optional[float], *, slo_status: Optional[str] = None,
           strike_status: Optional[str] = None, temp_start: Optional[float] = None,
           temp_end: Optional[float] = None, temp_peak: Optional[float] = None,
@@ -38,7 +42,7 @@ def route(state: str, overall: Optional[float], *, slo_status: Optional[str] = N
     if on("HOT_CUSTOMER"):
         hc = rules["HOT_CUSTOMER"]
         if temp_peak is not None and temp_peak >= float(hc.get("peak_at_least", 4)):
-            add("HOT_CUSTOMER", f"peak temperature {temp_peak:g}/5")
+            add("HOT_CUSTOMER", f"customer peaked {_TEMP_WORD.get(round(temp_peak), 'Angry')}")
         elif hc.get("end_above_start", True) and temp_end is not None and temp_start is not None \
                 and temp_end > temp_start:
             add("HOT_CUSTOMER", "customer ended hotter than they started")
@@ -46,7 +50,8 @@ def route(state: str, overall: Optional[float], *, slo_status: Optional[str] = N
         idr = rules["INSUFFICIENT_DATA"]
         missing = excluded_for_missing or []
         if idr.get("excluded_deterministic_dimension", True) and missing:
-            add("INSUFFICIENT_DATA", f"excluded for missing data: {', '.join(missing)}")
+            add("INSUFFICIENT_DATA", "not scored for missing source data: "
+                + ", ".join(_DIM_WORD.get(m, "a deterministic check") for m in missing))
         if data_completeness is not None and data_completeness < float(idr.get("data_completeness_below", 0.8)):
             add("INSUFFICIENT_DATA", f"data completeness {data_completeness:.0%}")
     if on("EVALUATOR_DISAGREEMENT") and disagreement:
