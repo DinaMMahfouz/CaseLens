@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ChecksCell, RunDetails, SampleTag, StatusPill, SyntheticBanner, Time } from "../components/ui";
 import { CHECK_VOCAB, checkLabel, dimensionInputLabel, lookup, ITEM_TYPE } from "../lib/labels";
 import { band, capByRelated, reviewRateBand } from "../lib/thresholds";
-import type { Dashboard, Run } from "../api";
+import type { Run } from "../api";
 
 const RAW = /\b[A-Z]{2,}(?:_[A-Z]+)+\b/;
 const CODES = ["MET", "BREACHED", "INSUFFICIENT_DATA", "NOT_APPLICABLE", "SUPPORT_IDLE", "NO_SUPPORT_IDLE", "APPLIED_CORRECTLY", "APPLIED_INCORRECTLY"];
@@ -13,6 +13,7 @@ const CODES = ["MET", "BREACHED", "INSUFFICIENT_DATA", "NOT_APPLICABLE", "SUPPOR
 const run: Run = {
   id: "r1", created_at: "2026-09-30T12:00:00Z", as_of: "2026-09-30T12:00:00Z", source: "fixtures", synthetic: true, total: 3, failed: 0,
   provider: "mock", model: "mock-heuristic-v1", temperature: null, config_hash: "abc123", prompt_versions: { troubleshooting: "v2" },
+  kind: "normal", label: "",
 };
 
 describe("status vocabulary", () => {
@@ -69,9 +70,9 @@ describe("low sample", () => {
 
 describe("synthetic banner, run details, times", () => {
   it("shows an amber banner only for fixture runs", () => {
-    render(<SyntheticBanner run={run} />);
+    render(<SyntheticBanner runs={[run]} />);
     expect(screen.getByTestId("synthetic-banner")).toHaveTextContent("Synthetic data");
-    const real = render(<SyntheticBanner run={{ ...run, source: "upload", synthetic: false }} />);
+    const real = render(<SyntheticBanner runs={[{ ...run, source: "upload", synthetic: false }]} />);
     expect(real.container).toBeEmptyDOMElement();
   });
   it("keeps provider and model inside the collapsible run details", () => {
@@ -89,24 +90,28 @@ describe("synthetic banner, run details, times", () => {
 });
 
 // ------------------------------------------------------------------ Overview: thresholds, low sample, "mock" containment
-const dash: Dashboard = {
-  run,
-  kpis: { cases: 3, average_score: 8.4, scored: 3, slo_compliance: 1, slo_n: 3, review_queue: 2, review_rate: 2 / 3,
-          eval_failed: 0, redaction_failed: 0, support_idle_cases: 0 },
-  score_distribution: Array.from({ length: 10 }, (_, i) => ({ bucket: `${i}-${i + 1}`, count: i === 8 ? 3 : 0 })),
-  slo_by_severity: [{ severity: 2, MET: 3, BREACHED: 0, INSUFFICIENT_DATA: 0 }],
-  three_strike: { NOT_APPLICABLE: 3 }, idle: {}, idle_cases: [],
-  dimension_averages: [{ dimension: "communication", label: "Communication", average: 8, n: 3 }],
-  review_reasons: { INSUFFICIENT_DATA: 1, HOT_CUSTOMER: 1 }, low_completeness: 1,
-};
-vi.mock("../api", async (orig) => {
-  const actual = await orig<typeof import("../api")>();
-  return { ...actual, api: { ...actual.api, dashboard: () => Promise.resolve(dash) } };
+const audit = (overall: number, extra: Record<string, unknown> = {}) => ({
+  id: `a${overall}`, state: "OK", overall, config_hash: "abc123", needs_review: false, review_reasons: [], data_completeness: 1,
+  dimensions: [{ dimension: "communication", label: "Communication", status: "SCORED", score: overall, weight: 20 }],
+  slo: { status: "MET" }, idle: { status: "NO_SUPPORT_IDLE" }, three_strike: { status: "NOT_APPLICABLE" }, ...extra,
+});
+const caseRows = [8.2, 8.4, 8.6].map((o, i) => ({
+  id: `c${i}`, run_id: "r1", case_number: `0010000${i}`, severity: 2, status: "Closed", state: "OK", closed_at: "2026-09-20T00:00:00Z",
+  opened_at: "2026-09-18T00:00:00Z", subject: "s", tses: { display_name: "Marta Lindqvist" },
+  audits: [audit(o, i < 2 ? { needs_review: true, review_reasons: [{ code: "HOT_CUSTOMER", detail: "" }] } : {})],
+}));
+vi.mock("../lib/supabase", () => {
+  const q: Record<string, unknown> = {};
+  ["select", "order", "eq", "in", "limit"].forEach((m) => { q[m] = () => q; });
+  q.then = (res: (v: unknown) => void) => res({ data: caseRows, error: null });
+  return { supabase: { from: () => q }, configured: true, initialAuthType: null };
 });
 vi.mock("../lib/hooks", async (orig) => {
   const actual = await orig<typeof import("../lib/hooks")>();
-  return { ...actual, useRun: () => ({ runs: [run], isManager: true, profile: { display_name: "Test Manager" }, runId: undefined,
-    tse: "t-1", tseName: "Marta Lindqvist", tses: [], currentRun: run, setRunId: () => {}, setTse: () => {} }) };
+  const ctx = { runs: [run], isManager: true, profile: { display_name: "Test Manager" }, sel: { cur: { kind: "run", runId: "latest" }, cmp: { kind: "prev-run" } },
+      tse: "t-1", tseName: "Marta Lindqvist", tses: [], scopeRuns: [run], setSel: () => {}, setTse: () => {} };
+  return { ...actual, useScopedHref: () => (p: string) => p,
+    useRun: () => ctx };
 });
 
 describe("Overview", () => {
@@ -115,7 +120,6 @@ describe("Overview", () => {
     const { container } = render(<MemoryRouter><Overview /></MemoryRouter>);
     expect(await screen.findByText("Overview · Marta Lindqvist")).toBeInTheDocument();
     expect(within(screen.getByTestId("kpi-Average score")).getByText("low sample")).toBeInTheDocument();
-    // "mock" appears nowhere outside the run-details popover
     const clone = container.cloneNode(true) as HTMLElement;
     clone.querySelectorAll("[data-testid=run-details]").forEach((n) => n.remove());
     expect(clone.textContent).not.toMatch(/mock/i);

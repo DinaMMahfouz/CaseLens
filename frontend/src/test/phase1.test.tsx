@@ -69,10 +69,11 @@ vi.mock("../api", async (orig) => {
 });
 vi.mock("../lib/hooks", async (orig) => {
   const actual = await orig<typeof import("../lib/hooks")>();
+  const ctx = { runs: [], isManager: true, profile: { display_name: "Test Manager" }, runId: undefined,
+                     tse: undefined, tses: [], setRunId: () => {}, setTse: () => {} };
   return {
     ...actual,
-    useRun: () => ({ runs: [], isManager: true, profile: { display_name: "Test Manager" }, runId: undefined,
-                     tse: undefined, tses: [], setRunId: () => {}, setTse: () => {} }),
+    useRun: () => ctx,
   };
 });
 
@@ -91,7 +92,7 @@ describe("case route", () => {
   it("accepts a case number and passes it through for resolution", async () => {
     caseMock.mockResolvedValue(null);
     await renderDetail("/cases/00100016");
-    await waitFor(() => expect(caseMock).toHaveBeenCalledWith("00100016", undefined));
+    await waitFor(() => expect(caseMock).toHaveBeenCalledWith("00100016", undefined, []));
   });
 
   it("shows a 404 page with a back link for an unknown id", async () => {

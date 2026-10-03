@@ -236,7 +236,7 @@ export function resolveScope(sel: Selection, runs: Run[], rows: Row[]): ScopeDat
     cur = runSide(run, rows, id === "latest" ? "Latest run" : run ? runName(run) : "Unknown run", id === "latest" ? "latest" : `run:${id}`);
     if (sel.cmp.kind === "prev-run") {
       const prev = run ? previousRun(runs, run) : null;
-      cmp = runSide(prev, rows, "Previous run", "prev");
+      cmp = runSide(prev, rows, "previous run", "prev");
     } else if (sel.cmp.kind === "run") {
       const other = runs.find((r) => r.id === (sel.cmp as { runId: string }).runId) ?? null;
       cmp = runSide(other, rows, other ? runName(other) : "Unknown run", `run:${sel.cmp.runId}`);

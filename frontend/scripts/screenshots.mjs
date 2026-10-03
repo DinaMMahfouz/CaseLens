@@ -32,6 +32,8 @@ const PAGES = {
     { name: "overview", path: "/" },
     { name: "cases", path: "/cases" },
     { name: "review", path: "/review" },
+    { name: "overview-sep-vs-aug", path: "/?cur=2026-09" },
+    { name: "overview-trend", path: "/?cur=2026-09", trend: "day" },
     { name: "case-00100016", path: "/cases", open: "00100016" },
     { name: "case-00100002", path: "/cases", open: "00100002" },
     { name: "case-00100013", path: "/cases", open: "00100013" },
@@ -62,6 +64,11 @@ for (const role of ["manager", "tse"]) {
       await page.setViewportSize({ width, height: 900 });
       await page.goto(BASE + p.path);
       await page.waitForLoadState("networkidle");
+      if (p.trend) {
+        await page.getByLabel("Trend period").selectOption(p.trend);
+        await page.waitForLoadState("networkidle");
+        await page.waitForTimeout(1500);
+      }
       if (p.open) {
         await page.getByText(p.open, { exact: true }).first().click();
         await page.waitForLoadState("networkidle");
