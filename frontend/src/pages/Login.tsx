@@ -1,14 +1,13 @@
 import { useState } from "react";
 import { supabase } from "../lib/supabase";
-import { Mark } from "../components/Mark";
+import { Wordmark } from "../components/Mark";
 
 function Shell({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="min-h-screen grid place-items-center px-4">
       <div className="w-full max-w-sm">
         <div className="flex items-center gap-2.5 mb-6 justify-center">
-          <Mark />
-          <span className="text-lg font-semibold tracking-tight">CaseLens</span>
+          <Wordmark size="lg" />
         </div>
         <div className="panel p-6">
           <h1 className="text-base font-semibold mb-4">{title}</h1>

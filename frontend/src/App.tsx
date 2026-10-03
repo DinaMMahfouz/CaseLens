@@ -5,7 +5,7 @@ import { api, type Profile, type Run, type Tse } from "./api";
 import { AppContext } from "./lib/hooks";
 import { configured, initialAuthType, supabase } from "./lib/supabase";
 import { fmtDate } from "./lib/format";
-import { Mark } from "./components/Mark";
+import { Wordmark } from "./components/Mark";
 import { Loading, SyntheticBanner } from "./components/ui";
 import { Login, NoAccess, NotConfigured, SetPassword } from "./pages/Login";
 import Overview from "./pages/Overview";
@@ -85,9 +85,8 @@ function Shell({ profile }: { profile: Profile }) {
       <div className="min-h-screen flex flex-col">
         <header className="sticky top-0 z-30 border-b border-line bg-bg/85 backdrop-blur supports-[backdrop-filter]:bg-bg/70">
           <div className="mx-auto max-w-[1440px] px-4 sm:px-6 min-h-14 flex flex-wrap items-center gap-x-6">
-            <NavLink to="/" className="flex items-center gap-2.5 shrink-0">
-              <Mark />
-              <span className="font-semibold tracking-tight">CaseLens</span>
+            <NavLink to="/" className="flex items-center shrink-0" aria-label="CaseLens home">
+              <Wordmark />
             </NavLink>
             <nav className="order-last w-full sm:order-none sm:w-auto flex items-center gap-1 overflow-x-auto [scrollbar-width:none] min-w-0 -mx-3 sm:mx-0" aria-label="Primary">
               {nav.map((n) => (
