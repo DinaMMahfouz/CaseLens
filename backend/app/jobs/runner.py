@@ -39,7 +39,7 @@ class AuditService:
                 run.status, run.error_kind = "failed", "interrupted"
 
     def create_run(self, source: str, upload_id: Optional[int] = None, as_of: Optional[datetime] = None,
-                   source_path: Optional[str] = None) -> int:
+                   source_path: Optional[str] = None, kind: str = "normal", label: str = "") -> int:
         """as_of fixes "now" for idle/SLO checks (deterministic fixture runs);
         source_path overrides the configured fixture file for this run only."""
         if source == "upload" and not self.settings.redaction_enabled:
@@ -49,6 +49,7 @@ class AuditService:
                 source=source, upload_id=upload_id, status="queued",
                 synthetic=(source == "fixtures" and self.settings.synthetic),
                 as_of=as_of or datetime.now(timezone.utc), config_hash=self.settings.config_hash,
+                kind=kind, label=label,
                 provider=self.provider.name, model=self.provider.model,
                 temperature=self.provider.effective_temperature,
                 prompt_versions={k: p.version for k, p in self.prompts.items()},

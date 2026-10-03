@@ -68,7 +68,7 @@ def build_payload(session: Session, run_id: int) -> dict[str, list[dict[str, Any
         "id": rid, "push_key": push_key(run), "as_of": _iso(run.as_of), "source": run.source,
         "synthetic": run.synthetic, "total": run.total, "failed": run.failed, "provider": run.provider,
         "model": run.model, "temperature": run.temperature, "config_hash": run.config_hash,
-        "prompt_versions": run.prompt_versions or {},
+        "prompt_versions": run.prompt_versions or {}, "kind": run.kind or "normal", "label": run.label or "",
     })
     cases = session.scalars(
         select(t.Case).where(t.Case.run_id == run_id)

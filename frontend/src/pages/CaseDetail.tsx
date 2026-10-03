@@ -17,8 +17,8 @@ const ACTION_LABEL = REVIEW_ACTION;
 
 export default function CaseDetailPage() {
   const { id } = useParams();
-  const { runs, isManager, profile, runId } = useRun();
-  const { data, error, loading, reload } = useAsync(() => api.case(id ?? "", runId), [id, runId]);
+  const { runs, isManager, profile, sel } = useRun();
+  const { data, error, loading, reload } = useAsync(() => api.case(id ?? "", sel, runs), [id, sel, runs]);
   const run = runs.find((r) => r.id === data?.run_id) ?? null;
   const [selected, setSelected] = useState<string | null>(null);
   const [flashKey, setFlashKey] = useState(0);

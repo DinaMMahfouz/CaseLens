@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Empty, ErrorNote, ErrorState, Loading, Panel, Time } from "../components/ui";
 import { useRun } from "../lib/hooks";
+import { selectionLabel } from "../components/Comparison";
 import { downloadExport } from "../lib/exportXlsx";
 
 const SHEETS = [
@@ -11,12 +12,14 @@ const SHEETS = [
 ];
 
 export default function ExportPage() {
-  const { currentRun: run, tse, tseName, runsLoading, runsError, reloadRuns } = useRun();
+  const { sel, runs, scopeRuns, tse, tseName, runsLoading, runsError, reloadRuns } = useRun();
+  const run = scopeRuns[0];
+  const label = selectionLabel(sel, runs);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<unknown>(null);
   const go = async () => {
     setBusy(true); setErr(null);
-    try { await downloadExport(run?.id, tse, tseName); } catch (e) { setErr(e); } finally { setBusy(false); }
+    try { await downloadExport(sel, runs, label, tse, tseName); } catch (e) { setErr(e); } finally { setBusy(false); }
   };
   return (
     <div className="space-y-5 max-w-3xl">

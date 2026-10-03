@@ -8,10 +8,10 @@ import { REASONS } from "../lib/labels";
 import { ACTION_LABEL } from "./Cases";
 
 export default function ReviewQueue() {
-  const { runId, tse, tseName } = useRun();
+  const { sel, runs, tse, tseName } = useRun();
   const [sort, setSort] = useState<"severity" | "score" | "case_number">("severity");
   const [only, setOnly] = useState<string>("");
-  const { data, error, loading, reload } = useAsync(() => api.queue(runId, sort, tse), [runId, sort, tse]);
+  const { data, error, loading, reload } = useAsync(() => api.queue(sel, runs, sort, tse), [sel, runs, sort, tse]);
 
   const groups = (data?.groups ?? []).filter((g) => !only || g.reason === only);
 

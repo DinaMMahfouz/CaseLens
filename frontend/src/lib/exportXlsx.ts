@@ -1,5 +1,6 @@
 // Client-side Excel export (Summary, Cases, Findings, Review Actions). Redacted data only.
-import { api } from "../api";
+import { api, type Run } from "../api";
+import type { Selection } from "./scope";
 import { temperatureLabel } from "./format";
 import { AUDIT_STATE, DIMENSION, FINDING_KIND, REASONS, REVIEW_ACTION, TRAJECTORY, checkLabel, lookup } from "./labels";
 
@@ -8,8 +9,12 @@ const reasonLabels = (rs: { code: string }[] | undefined) =>
 
 const DIMS = ["troubleshooting", "communication", "slo", "idle", "three_strike", "temperature_handling"];
 
-export async function downloadExport(runId?: string, tse?: string, tseName?: string) {
-  const [{ default: ExcelJS }, { run, cases }] = await Promise.all([import("exceljs"), api.exportRows(runId, tse)]);
+/** Exports the top-bar selection's Current side (the comparison label is recorded in Summary). */
+export async function downloadExport(sel: Selection, runs: Run[], label: string, tse?: string, tseName?: string) {
+  const [{ default: ExcelJS }, { scope, cases }] = await Promise.all([import("exceljs"), api.exportRows(sel, runs, tse)]);
+  const byId = new Map(runs.map((r) => [r.id, r]));
+  const used = [...new Set(cases.map((c) => c.run_id as string))].map((id) => byId.get(id)).filter((r): r is Run => Boolean(r));
+  const join = (f: (r: Run) => unknown) => [...new Set(used.map((r) => String(f(r) ?? "model default")))].join(", ");
   const wb = new ExcelJS.Workbook();
   wb.creator = "CaseLens";
   const sheet = (name: string, header: string[], rows: unknown[][]) => {
@@ -32,10 +37,12 @@ export async function downloadExport(runId?: string, tse?: string, tseName?: str
   audits.forEach((a) => new Set<string>((a.review_reasons ?? []).map((r: { code: string }) => r.code)).forEach((k) => { reasons[k] = (reasons[k] ?? 0) + 1; }));
 
   sheet("Summary", ["Metric", "Value"], [
-    ["Run as of (UTC)", run.as_of], ["Pushed (UTC)", run.created_at], ["Source", run.source === "fixtures" ? "Synthetic fixtures" : "Uploaded export"], ["Synthetic data", run.synthetic ? "Yes" : "No"],
-    ["TSE filter", tseName ?? "All TSEs"], ["Provider", run.provider], ["Model", run.model],
-    ["Temperature", run.temperature ?? "model default"], ["Config hash", run.config_hash],
-    ["Prompt versions", Object.entries(run.prompt_versions ?? {}).map(([k, v]) => `${k}=${v}`).join(", ")],
+    ["Selection", label], ["Exported scope", scope.cur.label], ["Scope rule", scope.cur.detail],
+    ["Runs (as of, UTC)", used.map((r) => r.as_of).join(", ")],
+    ["Source", join((r) => (r.source === "fixtures" ? "Synthetic fixtures" : "Uploaded export"))], ["Synthetic data", used.some((r) => r.synthetic || r.source === "fixtures") ? "Yes" : "No"],
+    ["TSE filter", tseName ?? "All TSEs"], ["Provider", join((r) => r.provider)], ["Model", join((r) => r.model)],
+    ["Temperature", join((r) => r.temperature)], ["Config hash", join((r) => r.config_hash)],
+    ["Prompt versions", [...new Set(used.flatMap((r) => Object.entries(r.prompt_versions ?? {}).map(([k, v]) => `${k}=${v}`)))].join(", ")],
     ["Cases", cases.length],
     ["Average overall /10", scored.length ? Math.round((scored.reduce((s, x) => s + x, 0) / scored.length) * 100) / 100 : null],
     ["In review queue", audits.filter((a) => a.needs_review).length],
@@ -83,7 +90,7 @@ export async function downloadExport(runId?: string, tse?: string, tseName?: str
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `caselens-${(run.as_of ?? run.created_at).slice(0, 10)}${tse ? `-${tse.replace(/\s+/g, "_")}` : ""}.xlsx`;
+  a.download = `caselens-${scope.cur.key.replace(/[^\w.-]+/g, "_")}${tseName ? `-${tseName.replace(/\s+/g, "_")}` : ""}.xlsx`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }

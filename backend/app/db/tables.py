@@ -56,6 +56,10 @@ class Run(Base):
     error_kind: Mapped[str] = mapped_column(String(64), default="")
     as_of: Mapped[Optional[datetime]] = mapped_column(UTCDateTime())
     config_hash: Mapped[str] = mapped_column(String(32), default="")
+    # normal | config_test. A config-test run re-scores cases under changed rules; it is shown only
+    # when explicitly selected and never feeds "previous run" defaults or period views.
+    kind: Mapped[str] = mapped_column(String(16), default="normal")
+    label: Mapped[str] = mapped_column(String(64), default="")
     provider: Mapped[str] = mapped_column(String(32), default="")
     model: Mapped[str] = mapped_column(String(64), default="")
     temperature: Mapped[Optional[float]] = mapped_column(Float)

@@ -532,9 +532,23 @@ def pii_manifest(cases: list[CaseSpec]) -> list[str]:
     return sorted(values)
 
 
-def generate(out: Path, reference: Optional[datetime] = None) -> dict:
+def select_variant(cases: list[CaseSpec], number_prefix: str = "00100",
+                   exclude: Optional[set[str]] = None) -> list[CaseSpec]:
+    """A month of fixtures: drop some cases and renumber the rest (00100xxx -> <prefix>xxx), so each
+    month has its own case numbers and "latest audit per case" never merges two months."""
+    out = []
+    for c in cases:
+        if exclude and c.number in exclude:
+            continue
+        c.number = number_prefix + c.number[len("00100"):]
+        out.append(c)
+    return out
+
+
+def generate(out: Path, reference: Optional[datetime] = None, number_prefix: str = "00100",
+             exclude: Optional[set[str]] = None) -> dict:
     reference = (reference or datetime.now(timezone.utc)).replace(second=0, microsecond=0)
-    cases = build_cases(reference)
+    cases = select_variant(build_cases(reference), number_prefix, exclude)
     write_workbook(cases, out)
     return {
         "reference": reference.isoformat(),

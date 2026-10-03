@@ -1,6 +1,14 @@
 // Data layer: reads REDACTED audit results from Supabase. Row-level security limits
 // TSE users to their own cases; this module never needs to enforce that itself.
 import { supabase } from "./lib/supabase";
+import { fmtDate } from "./lib/format";
+import {
+  MEMBERSHIP_FIELD, configHashes, dataDate, hashesDiffer, latestRun, one, periodRows, previousRun, summarize,
+  type Row, type Summary,
+} from "./lib/metrics";
+import {
+  formatPeriodKey, membershipTooltip, periodLabel, previousPeriod, samePeriodLastYear, type Period, type Selection,
+} from "./lib/scope";
 
 export type Severity = 1 | 2 | 3 | 4 | null;
 
@@ -17,6 +25,9 @@ export interface Run {
   temperature: number | null;
   config_hash: string;
   prompt_versions: Record<string, string>;
+  /** normal | config_test (config-test runs are shown only when explicitly selected). */
+  kind: string;
+  label: string;
 }
 
 export interface ReviewSummary {
@@ -114,22 +125,19 @@ export interface CaseDetail extends CaseRow {
   description: string; resolution: string; missing_fields: string[]; run_id: string;
   items: Item[]; audit: Audit | null;
 }
-export interface Dashboard {
-  run: Run | null;
-  kpis: {
-    cases: number; average_score: number | null; scored: number; slo_compliance: number | null; slo_n: number;
-    review_queue: number; review_rate: number | null;
-    eval_failed: number; redaction_failed: number; support_idle_cases: number;
-  };
-  score_distribution: { bucket: string; count: number }[];
-  slo_by_severity: { severity: number; MET: number; BREACHED: number; INSUFFICIENT_DATA: number }[];
-  three_strike: Record<string, number>;
-  idle: Record<string, number>;
-  idle_cases: (CaseRow & { support_idle_hours: number; customer_idle_hours: number })[];
-  dimension_averages: { dimension: string; label: string; average: number; n: number }[];
-  review_reasons: Record<string, number>;
-  low_completeness: number;
+/** One side of a comparison, resolved to concrete rows. */
+export interface Side {
+  key: string;                 // URL key of this side (for links/tests)
+  label: string;               // "Sep 2026", "Latest run", "Run Aug 31, 2026"
+  detail: string;              // tooltip: membership rule or run date
+  kind: "run" | "period";
+  run: Run | null;             // run sides only
+  period: Period | null;       // period sides only
+  rows: Row[];
+  hashes: string[];
 }
+export interface ScopeData { cur: Side; cmp: Side | null; hashWarning: boolean; dataDate: string; latest: Run | null }
+export interface Dashboard { scope: ScopeData; cur: Summary; cmp: Summary | null; idle_cases: (CaseRow & { support_idle_hours: number; customer_idle_hours: number })[] }
 export interface Profile { id: string; email: string; display_name: string; role: "manager" | "tse" }
 export interface Tse { id: string; display_name: string; active: boolean }
 
@@ -152,13 +160,10 @@ function check<T>(res: { data: T | null; error: { message: string; code?: string
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isUuid = (s: string) => UUID.test(s);
-const one = <T,>(v: T | T[] | null | undefined): T | null => (Array.isArray(v) ? v[0] ?? null : v ?? null);
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Row = Record<string, any>;
 
-const LIST_AUDIT = "id,state,overall,dimensions,slo,idle,three_strike,temperature_value,trajectory,data_completeness,scored_dimensions,applicable_dimensions,is_heuristic,review_reasons,needs_review,review_actions(action,reviewer_name,created_at,score_override)";
-const CASE_COLS = "id,case_number,severity,status,state,tse_id,tses(display_name),account_label,product,opened_at,closed_at,subject";
+const LIST_AUDIT = "id,state,overall,dimensions,slo,idle,three_strike,temperature_value,trajectory,data_completeness,scored_dimensions,applicable_dimensions,is_heuristic,review_reasons,needs_review,config_hash,review_actions(action,reviewer_name,created_at,score_override)";
+const CASE_COLS = "id,run_id,case_number,severity,status,state,tse_id,tses(display_name),account_label,product,opened_at,closed_at,subject";
 
 function latestReview(actions: Row[] | undefined): ReviewSummary | null {
   if (!actions?.length) return null;
@@ -186,20 +191,68 @@ function toRow(c: Row): CaseRow {
   };
 }
 
-async function resolveRun(runId?: string): Promise<Run | null> {
-  const q = supabase.from("runs").select("*").order("created_at", { ascending: false }).limit(1);
-  const data = check(runId ? await supabase.from("runs").select("*").eq("id", runId).limit(1) : await q) as Run[];
-  return data[0] ?? null;
+// ------------------------------------------------------------------ case cache + scope resolution
+// Every view works from one fetch of the visible case rows (RLS limits a TSE to their own cases).
+const CACHE_MS = 30_000;
+const cache = new Map<string, { at: number; rows: Promise<Row[]> }>();
+export function invalidateCases() { cache.clear(); }
+
+function allCases(tse?: string): Promise<Row[]> {
+  const key = tse ?? "*";
+  const hit = cache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_MS) return hit.rows;
+  let q = supabase.from("cases").select(`${CASE_COLS},audits(${LIST_AUDIT})`).order("case_number");
+  if (tse) q = q.eq("tse_id", tse);
+  const rows = (async () => check(await q) as Row[])();
+  rows.catch(() => cache.delete(key));
+  cache.set(key, { at: Date.now(), rows });
+  return rows;
 }
 
-async function runCases(runId?: string, tse?: string): Promise<{ run: Run | null; rows: Row[] }> {
-  const run = await resolveRun(runId);
-  if (!run) return { run: null, rows: [] };
-  let q = supabase.from("cases")
-    .select(`${CASE_COLS},audits(${LIST_AUDIT})`)
-    .eq("run_id", run.id).order("case_number");
-  if (tse) q = q.eq("tse_id", tse);
-  return { run, rows: check(await q) as Row[] };
+const RUN_DATE = (r: Run) => fmtDate(r.as_of ?? r.created_at, false);
+export const runName = (r: Run) => r.label || `Run ${RUN_DATE(r)}`;
+
+function runSide(run: Run | null, rows: Row[], label: string, key: string): Side {
+  const mine = run ? rows.filter((r) => r.run_id === run.id) : [];
+  return { key, label, detail: run ? `Audit run as of ${RUN_DATE(run)}` : "No earlier run", kind: "run", run,
+           period: null, rows: mine, hashes: run?.config_hash ? [run.config_hash] : [] };
+}
+
+function periodSide(period: Period, rows: Row[], runs: Run[], openOn: string | null, key: string): Side {
+  const mine = periodRows(rows, runs, period, { includeOpenOn: openOn });
+  const tip = membershipTooltip(period, MEMBERSHIP_FIELD) + (openOn ? "; open cases are included" : "");
+  return { key, label: periodLabel(period), detail: tip, kind: "period", run: null, period, rows: mine, hashes: configHashes(mine) };
+}
+
+/** Resolve a selection into Current and Compare sides (pure apart from the cached fetch). */
+export function resolveScope(sel: Selection, runs: Run[], rows: Row[]): ScopeData {
+  const latest = latestRun(runs);
+  const today = dataDate(runs);
+  let cur: Side;
+  let cmp: Side | null = null;
+  if (sel.cur.kind === "run") {
+    const id = sel.cur.runId;
+    const run = id === "latest" ? latest : runs.find((r) => r.id === id) ?? null;
+    cur = runSide(run, rows, id === "latest" ? "Latest run" : run ? runName(run) : "Unknown run", id === "latest" ? "latest" : `run:${id}`);
+    if (sel.cmp.kind === "prev-run") {
+      const prev = run ? previousRun(runs, run) : null;
+      cmp = runSide(prev, rows, "Previous run", "prev");
+    } else if (sel.cmp.kind === "run") {
+      const other = runs.find((r) => r.id === (sel.cmp as { runId: string }).runId) ?? null;
+      cmp = runSide(other, rows, other ? runName(other) : "Unknown run", `run:${sel.cmp.runId}`);
+    }
+  } else {
+    const p = sel.cur.period;
+    cur = periodSide(p, rows, runs, today, formatPeriodKey(p));
+    const base = sel.cmp.kind === "prev-period" ? previousPeriod(p) : sel.cmp.kind === "yoy" ? samePeriodLastYear(p)
+      : sel.cmp.kind === "period" ? sel.cmp.period : null;
+    if (base) cmp = periodSide(base, rows, runs, null, formatPeriodKey(base));
+  }
+  return { cur, cmp, hashWarning: cmp ? hashesDiffer(cur.hashes, cmp.hashes) : false, dataDate: today, latest };
+}
+
+async function scope(sel: Selection, runs: Run[], tse?: string): Promise<ScopeData> {
+  return resolveScope(sel, runs, await allCases(tse));
 }
 
 // ------------------------------------------------------------------ API
@@ -217,63 +270,32 @@ export const api = {
     return check(await supabase.from("tses").select("id,display_name,active").eq("active", true).order("display_name")) as Tse[];
   },
 
-  async dashboard(runId?: string, tse?: string): Promise<Dashboard> {
-    const { run, rows } = await runCases(runId, tse);
-    const cases = rows.map((c) => ({ c, a: one(c.audits) as Row | null }));
-    const audits = cases.map((x) => x.a).filter(Boolean) as Row[];
-    const buckets = Array.from({ length: 10 }, (_, i) => ({ bucket: `${i}-${i + 1}`, count: 0 }));
-    audits.forEach((a) => { if (a.overall != null) buckets[Math.min(9, Math.floor(a.overall))].count += 1; });
-    const slo = new Map<number, { MET: number; BREACHED: number; INSUFFICIENT_DATA: number }>();
-    cases.forEach(({ c, a }) => {
-      if (!a?.slo) return;
-      const k = c.severity ?? 0;
-      const cur = slo.get(k) ?? { MET: 0, BREACHED: 0, INSUFFICIENT_DATA: 0 };
-      cur[a.slo.status as "MET"] += 1;
-      slo.set(k, cur);
-    });
-    const dims = new Map<string, { label: string; v: number[] }>();
-    audits.forEach((a) => (a.dimensions ?? []).forEach((d: Dimension) => {
-      const cur = dims.get(d.dimension) ?? { label: d.label, v: [] };
-      if (d.status === "SCORED" && d.score != null) cur.v.push(d.score);
-      dims.set(d.dimension, cur);
-    }));
-    const count = (vals: string[]) => vals.reduce<Record<string, number>>((acc, v) => { acc[v] = (acc[v] ?? 0) + 1; return acc; }, {});
-    const scored = audits.map((a) => a.overall).filter((x): x is number => x != null);
-    let sloMet = 0, sloTotal = 0;
-    slo.forEach((v) => { sloMet += v.MET; sloTotal += v.MET + v.BREACHED; });
+  async dashboard(sel: Selection, runs: Run[], tse?: string, bucketWidth = 1): Promise<Dashboard> {
+    const sc = await scope(sel, runs, tse);
     return {
-      run,
-      kpis: {
-        cases: rows.length,
-        average_score: scored.length ? Math.round((scored.reduce((s, x) => s + x, 0) / scored.length) * 100) / 100 : null,
-        scored: scored.length,
-        slo_compliance: sloTotal ? sloMet / sloTotal : null,
-        slo_n: sloTotal,
-        review_queue: audits.filter((a) => a.needs_review).length,
-        review_rate: audits.length ? audits.filter((a) => a.needs_review).length / audits.length : null,
-        eval_failed: audits.filter((a) => a.state === "EVAL_FAILED").length,
-        redaction_failed: audits.filter((a) => a.state === "REDACTION_FAILED").length,
-        support_idle_cases: audits.filter((a) => a.idle?.status === "SUPPORT_IDLE").length,
-      },
-      score_distribution: buckets,
-      slo_by_severity: [...slo.entries()].sort((a, b) => a[0] - b[0]).map(([severity, v]) => ({ severity, ...v })),
-      three_strike: count(audits.map((a) => a.three_strike?.status ?? "N/A")),
-      idle: count(audits.map((a) => a.idle?.status ?? "N/A")),
-      idle_cases: cases.filter(({ a }) => a?.idle?.windows?.length)
+      scope: sc,
+      cur: summarize(sc.cur.rows, bucketWidth),
+      cmp: sc.cmp ? summarize(sc.cmp.rows, bucketWidth) : null,
+      idle_cases: sc.cur.rows.map((c) => ({ c, a: one(c.audits) as Row | null }))
+        .filter(({ a }) => a?.idle?.windows?.length)
         .map(({ c, a }) => ({ ...toRow(c), support_idle_hours: a!.idle.support_idle_hours ?? 0, customer_idle_hours: a!.idle.customer_idle_hours ?? 0 }))
         .sort((x, y) => y.support_idle_hours - x.support_idle_hours),
-      dimension_averages: [...dims.entries()].filter(([, v]) => v.v.length)
-        .map(([dimension, v]) => ({ dimension, label: v.label, average: Math.round((v.v.reduce((s, x) => s + x, 0) / v.v.length) * 100) / 100, n: v.v.length })),
-      review_reasons: count(audits.flatMap((a) => [...new Set<string>((a.review_reasons ?? []).map((r: { code: string }) => r.code))])),
-      low_completeness: audits.filter((a) => a.data_completeness != null && a.data_completeness < 0.8).length,
     };
   },
 
-  async cases(params: {
-    run_id?: string; tse?: string; severity?: number[]; score_min?: string; score_max?: string; review_reason?: string;
-    status?: string; state?: string; q?: string; sort?: string; order?: "asc" | "desc";
+  /** KPI series over consecutive periods (oldest first), for the Overview trend lines. */
+  async trend(periods: Period[], runs: Run[], tse?: string) {
+    const rows = await allCases(tse);
+    const today = dataDate(runs);
+    return periods.map((p) => ({ period: p, label: periodLabel(p), summary: summarize(periodRows(rows, runs, p, { includeOpenOn: today })) }));
+  },
+
+  async cases(sel: Selection, runs: Run[], params: {
+    tse?: string; severity?: number[]; score_min?: string; score_max?: string; review_reason?: string;
+    status?: string; state?: string; check?: string; q?: string; sort?: string; order?: "asc" | "desc";
   }) {
-    const { run, rows } = await runCases(params.run_id, params.tse);
+    const sc = await scope(sel, runs, params.tse);
+    const rows = sc.cur.rows;
     let out = rows.map(toRow);
     const min = params.score_min ? Number(params.score_min) : null;
     const max = params.score_max ? Number(params.score_max) : null;
@@ -281,9 +303,10 @@ export const api = {
       (!params.severity?.length || params.severity.includes(r.severity ?? 0)) &&
       (min == null || (r.overall != null && r.overall >= min)) &&
       (max == null || (r.overall != null && r.overall <= max)) &&
-      (!params.review_reason || r.review_reasons.includes(params.review_reason)) &&
+      (!params.review_reason || (params.review_reason === "any" ? r.needs_review : r.review_reasons.includes(params.review_reason))) &&
       (!params.status || r.status.toLowerCase() === params.status.toLowerCase()) &&
-      (!params.state || r.state === params.state) &&
+      (!params.state || (params.state === "failed" ? r.state !== "OK" : r.state === params.state)) &&
+      matchesCheck(r, params.check) &&
       (!params.q || r.case_number.toLowerCase().includes(params.q.toLowerCase()) || r.subject.toLowerCase().includes(params.q.toLowerCase())),
     );
     const key = (["case_number", "severity", "overall", "opened_at"].includes(params.sort ?? "") ? params.sort : "case_number") as keyof CaseRow;
@@ -295,19 +318,24 @@ export const api = {
       if (y == null) return -1;
       return (x < y ? -1 : x > y ? 1 : 0) * dir;
     });
-    return { run_id: run?.id ?? null, total: out.length, rows: out, facets: { statuses: [...new Set(rows.map((r) => r.status as string))].filter(Boolean).sort() } };
+    return { scope: sc, total: out.length, rows: out, facets: { statuses: [...new Set(rows.map((r) => r.status as string))].filter(Boolean).sort() } };
   },
 
-  /** Accepts a case UUID or a case number (resolved in the given run, else the latest run).
-   *  Returns null when no such case exists or it isn't visible to the signed-in user. */
-  async case(idOrNumber: string, runId?: string): Promise<CaseDetail | null> {
+  /** Accepts a case UUID or a case number (resolved to the latest audit of that case in the
+   *  current selection, else in any run). Returns null when no such case exists or it isn't visible. */
+  async case(idOrNumber: string, sel?: Selection, runs: Run[] = []): Promise<CaseDetail | null> {
     let q = supabase.from("cases").select("*, tses(display_name), items(*), audits(*, findings(*), review_actions(*))");
     if (isUuid(idOrNumber)) {
       q = q.eq("id", idOrNumber);
     } else {
-      const run = await resolveRun(runId);
-      if (!run || !/^[\w-]{1,64}$/.test(idOrNumber)) return null;
-      q = q.eq("case_number", idOrNumber).eq("run_id", run.id);
+      if (!/^[\w-]{1,64}$/.test(idOrNumber)) return null;
+      const rows = await allCases();
+      const inScope = sel ? resolveScope(sel, runs, rows).cur.rows.find((r) => r.case_number === idOrNumber) : null;
+      const anyRun = periodRows(rows.filter((r) => r.case_number === idOrNumber), runs,
+                                { grain: "custom", from: "0000-01-01", to: "9999-12-31" }, { includeOpenOn: "0000-01-01" })[0];
+      const hit = inScope ?? anyRun ?? rows.find((r) => r.case_number === idOrNumber);
+      if (!hit) return null;
+      q = q.eq("id", hit.id);
     }
     const data = check(await q.order("position", { referencedTable: "items" }).limit(1)) as Row[];
     const c = data[0];
@@ -326,36 +354,49 @@ export const api = {
     };
   },
 
-  async queue(runId?: string, sort: "severity" | "score" | "case_number" = "severity", tse?: string) {
-    const { run, rows } = await runCases(runId, tse);
+  async queue(sel: Selection, runs: Run[], sort: "severity" | "score" | "case_number" = "severity", tse?: string) {
+    const sc = await scope(sel, runs, tse);
+    const rows = sc.cur.rows;
     const list = rows.map(toRow).filter((r) => r.needs_review);
     const ov = (r: CaseRow) => (r.overall ?? -1);
     list.sort(sort === "score" ? (a, b) => ov(a) - ov(b) || (a.severity ?? 9) - (b.severity ?? 9)
       : sort === "case_number" ? (a, b) => a.case_number.localeCompare(b.case_number)
       : (a, b) => (a.severity ?? 9) - (b.severity ?? 9) || ov(a) - ov(b));
-    const order = ["REDACTION_FAILED", "EVAL_FAILED", "RULE_BREACH", "HOT_CUSTOMER", "LOW_SCORE", "LOW_CONFIDENCE"];
+    const order = ["REDACTION_FAILED", "EVAL_FAILED", "RULE_BREACH", "HOT_CUSTOMER", "LOW_SCORE", "INSUFFICIENT_DATA", "EVALUATOR_DISAGREEMENT"];
     return {
-      run_id: run?.id ?? null, total: list.length,
+      scope: sc, total: list.length,
       groups: order.map((reason) => ({ reason, cases: list.filter((r) => r.review_reasons.includes(reason)) })).filter((g) => g.cases.length),
     };
   },
 
   async review(auditId: string, body: { action: string; score_override?: number | null; comment?: string }) {
     // reviewer_id / reviewer_name / created_at are stamped server-side from the session.
+    invalidateCases();
     check(await supabase.from("review_actions").insert({
       audit_id: auditId, action: body.action, comment: body.comment ?? "",
       score_override: body.action === "override" ? body.score_override : null,
     }));
   },
 
-  async exportRows(runId?: string, tse?: string) {
-    const run = await resolveRun(runId);
-    if (!run) throw new Error("No runs to export");
-    let q = supabase.from("cases").select("*, tses(display_name), items(ref_id,body), audits(*, findings(*), review_actions(*))").eq("run_id", run.id).order("case_number");
-    if (tse) q = q.eq("tse_id", tse);
-    return { run, cases: check(await q) as Row[] };
+  async exportRows(sel: Selection, runs: Run[], tse?: string) {
+    const sc = await scope(sel, runs, tse);
+    const ids = sc.cur.rows.map((r) => r.id);
+    if (!ids.length) return { scope: sc, cases: [] as Row[] };
+    const q = supabase.from("cases").select("*, tses(display_name), items(ref_id,body), audits(*, findings(*), review_actions(*))").in("id", ids).order("case_number");
+    return { scope: sc, cases: check(await q) as Row[] };
   },
 };
+
+/** Cases-page "check" filter: slo / idle / three_strike = breached; insufficient = any check lacking data. */
+export function matchesCheck(r: CaseRow, check?: string): boolean {
+  switch (check) {
+    case "slo": return r.slo === "BREACHED";
+    case "idle": return r.idle === "SUPPORT_IDLE";
+    case "three_strike": return r.three_strike === "APPLIED_INCORRECTLY";
+    case "insufficient": return [r.slo, r.idle, r.three_strike].includes("INSUFFICIENT_DATA");
+    default: return true;
+  }
+}
 
 function llmSummary(llm: Row): Record<string, LlmDim> {
   const out: Record<string, LlmDim> = {};

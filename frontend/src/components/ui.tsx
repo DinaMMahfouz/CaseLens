@@ -1,4 +1,5 @@
-import { DataError, type Run } from "../api";
+import { DataError, type Run, type ScopeData } from "../api";
+import type { Delta } from "../lib/metrics";
 import { Fragment, type ReactNode } from "react";
 import { C, auditStateColor, checkColor, fmtDate, fmtUtc, plural, reasonColor, scoreColor, severityColor } from "../lib/format";
 import { AUDIT_STATE, CHECK_NAME, REASONS, checkKind, checkLabel, checkTooltip, lookup, type CheckName } from "../lib/labels";
@@ -154,13 +155,19 @@ export function Loading({ variant = "page" }: { variant?: "page" | "table" | "de
 }
 
 // ------------------------------------------------------------------ banners & popovers
-export function SyntheticBanner({ run }: { run: Run | null | undefined }) {
-  if (!run || (run.source !== "fixtures" && !run.synthetic)) return null;
+export function SyntheticBanner({ runs }: { runs: Run[] }) {
+  const synthetic = runs.filter((r) => r.source === "fixtures" || r.synthetic);
+  if (!synthetic.length) return null;
+  const configTest = runs.some((r) => r.kind === "config_test");
   return (
-    <div className="rounded-lg px-3 py-2 text-sm flex items-center gap-2" role="note" data-testid="synthetic-banner"
+    <div className="rounded-lg px-3 py-2 text-sm flex flex-wrap items-center gap-x-2" role="note" data-testid="synthetic-banner"
          style={{ color: C.warning, background: `color-mix(in oklab, ${C.warning} 12%, transparent)`, boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${C.warning} 40%, transparent)` }}>
       <span className="font-semibold">Synthetic data</span>
-      <span className="text-muted">This run was generated from test fixtures, not real support cases.</span>
+      <span className="text-muted">
+        {configTest ? "Config test run: the September fixtures re-scored with changed rules. Not part of normal reporting."
+          : synthetic.length === runs.length ? "This data was generated from test fixtures, not real support cases."
+          : "Part of this data was generated from test fixtures."}
+      </span>
     </div>
   );
 }
@@ -234,6 +241,42 @@ export function ChecksCell({ slo, idle, strike }: { slo: string | null; idle: st
   return (
     <div className="flex flex-wrap gap-1" title={title}>
       {flagged.map(([c, v]) => <Pill key={c} color={checkColor(v)}>{SHORT_NAME[c]} · {checkLabel(v)}</Pill>)}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ comparison
+/** A delta vs the baseline: "▲ 0.4" for scores, "▼ 6 pp" for rates. Low sample on either side
+ *  shows the delta uncoloured; an empty baseline says so instead of showing 0. */
+export function DeltaTag({ d, low = false, baseLabel, baseEmpty = false }: { d: Delta | null; low?: boolean; baseLabel?: string | null; baseEmpty?: boolean }) {
+  if (baseLabel == null) return null;
+  if (baseEmpty) return <span className="text-[11px] text-muted" data-testid="delta-nodata">No data for {baseLabel}</span>;
+  if (!d) return <span className="text-[11px] text-muted" title={`No value for ${baseLabel}`}>—</span>;
+  const color = low || d.better == null ? C.muted : d.better ? C.success : C.danger;
+  return (
+    <span className="mono text-[11px] whitespace-nowrap" style={{ color }} data-testid="delta"
+          data-coloured={!low && d.better != null ? "yes" : "no"}
+          title={`vs ${baseLabel}${low ? " · low sample, not coloured" : ""}`}>
+      {d.text}
+    </span>
+  );
+}
+
+/** The comparison line under a page title, with the rule-change warning when hashes differ. */
+export function ComparisonHeader({ scope, count, noun = "case" }: { scope: ScopeData; count: number; noun?: string }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-sm text-muted flex flex-wrap items-center gap-x-1.5" data-testid="comparison-line">
+        <span title={scope.cur.detail} className="underline decoration-dotted decoration-line underline-offset-4">{scope.cur.label}</span>
+        {scope.cmp && <>vs <span title={scope.cmp.detail} className="underline decoration-dotted decoration-line underline-offset-4">{scope.cmp.label}</span></>}
+        <span>· {plural(count, noun)}</span>
+      </p>
+      {scope.hashWarning && (
+        <div role="note" data-testid="config-warning" className="rounded-lg px-3 py-2 text-sm"
+             style={{ color: C.warning, background: `color-mix(in oklab, ${C.warning} 12%, transparent)`, boxShadow: `inset 0 0 0 1px color-mix(in oklab, ${C.warning} 40%, transparent)` }}>
+          Scoring rules changed between these periods; part of the delta comes from the rule change.
+        </div>
+      )}
     </div>
   );
 }

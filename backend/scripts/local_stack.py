@@ -24,10 +24,34 @@ ROOT = Path(__file__).resolve().parents[2]
 ENV_LOCAL = ROOT / ".env.local"
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
-# Fixture runs loaded into the local stack: (label, reference/as-of, kind, case prefix, config tweak)
+# Fixture runs loaded into the local stack, oldest first:
+#   (label, reference/as-of, kind, case-number prefix, excluded fixture cases, scoring tweak)
+# Aug 2026 is a smaller month (no open cases, a few strong cases absent) with its own case numbers.
+# The config-test run re-scores the Sep cases with outcome-based temperature handling; it is
+# kind=config_test, so it is used only when explicitly selected and never affects defaults.
+AUG_EXCLUDE = {"00100001", "00100003", "00100008", "00100012", "00100017", "00100018",  # strong cases absent
+               "00100005", "00100013", "00100015", "00100019"}          # open at month end
 FIXTURE_RUNS = [
-    ("Sep 2026", datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc), "normal", "001", None),
+    ("Aug 2026", datetime(2026, 8, 31, 12, 0, tzinfo=timezone.utc), "normal", "00099", AUG_EXCLUDE, None),
+    ("Synthetic · config test", datetime(2026, 9, 30, 11, 0, tzinfo=timezone.utc), "config_test", "00100", None,
+     {"temperature_handling": {"mode": "outcome_based"}}),
+    ("Sep 2026", datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc), "normal", "00100", None, None),
 ]
+
+
+def _tweaked(settings, tweak):
+    """Settings with a scoring override (deep-merged); config_hash changes accordingly."""
+    import copy
+    import dataclasses
+    if not tweak:
+        return settings
+    scoring = copy.deepcopy(settings.scoring)
+    for key, val in tweak.items():
+        if isinstance(val, dict):
+            scoring.setdefault(key, {}).update(val)
+        else:
+            scoring[key] = val
+    return dataclasses.replace(settings, scoring=scoring)
 
 
 def local_status() -> dict[str, str]:
@@ -95,7 +119,9 @@ def main() -> int:
     write_frontend_env(status)
 
     # Point the worker at a separate local SQLite file and the local stack only.
-    os.environ["DATABASE_URL"] = f"sqlite:///{(ROOT / 'var' / 'localstack.db').as_posix()}"
+    db_file = ROOT / "var" / "localstack.db"
+    db_file.unlink(missing_ok=True)            # rebuilt from fixtures every time
+    os.environ["DATABASE_URL"] = f"sqlite:///{db_file.as_posix()}"
     os.environ["SUPABASE_URL"] = status["API_URL"]
     os.environ["SUPABASE_SECRET_KEY"] = service_key
 
@@ -112,11 +138,12 @@ def main() -> int:
     client = SupabaseClient(status["API_URL"], service_key)
     create_users(client, env)
 
-    for label, reference, kind, prefix, _tweak in FIXTURE_RUNS:
-        path = ROOT / "var" / f"localstack_{prefix}.xlsx"
-        generate(path, reference)
-        svc = AuditService(settings)
-        run_id = svc.create_run("fixtures", as_of=reference, source_path=str(path))
+    for label, reference, kind, prefix, exclude, tweak in FIXTURE_RUNS:
+        path = ROOT / "var" / f"localstack_{prefix}_{kind}.xlsx"
+        generate(path, reference, prefix, exclude)
+        svc = AuditService(_tweaked(settings, tweak))
+        run_id = svc.create_run("fixtures", as_of=reference, source_path=str(path), kind=kind,
+                                label=label if kind != "normal" else "")
         svc.process_run(run_id)
         svc.pool.shutdown(wait=False)
         with session_scope() as s:
