@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import type { Profile, Run } from "../api";
+import type { Profile, Run, Tse } from "../api";
 
 export function useAsync<T>(fn: () => Promise<T>, deps: unknown[]) {
   const [data, setData] = useState<T | null>(null);
@@ -25,10 +25,10 @@ export interface AppCtx {
   runs: Run[];
   runId: string | undefined;
   setRunId: (id: string | undefined) => void;
-  /** Selected TSE. For TSE users RLS already limits rows; this stays undefined. */
+  /** Selected TSE id (managers). For TSE users RLS already limits rows; this stays undefined. */
   tse: string | undefined;
-  setTse: (name: string | undefined) => void;
-  tses: string[];
+  setTse: (id: string | undefined) => void;
+  tses: Tse[];
 }
 
 export const AppContext = createContext<AppCtx | null>(null);

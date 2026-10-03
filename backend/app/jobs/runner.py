@@ -30,6 +30,7 @@ class AuditService:
         self.pool = ThreadPoolExecutor(max_workers=int(settings.app.get("jobs", {}).get("workers", 1)),
                                        thread_name_prefix="audit")
         self._lock = threading.Lock()
+        self._source_override: dict[int, str] = {}
 
     # ------------------------------------------------------------------ lifecycle
     def recover_interrupted(self) -> None:
@@ -37,20 +38,25 @@ class AuditService:
             for run in s.scalars(select(t.Run).where(t.Run.status.in_(["queued", "running"]))):
                 run.status, run.error_kind = "failed", "interrupted"
 
-    def create_run(self, source: str, upload_id: Optional[int] = None) -> int:
+    def create_run(self, source: str, upload_id: Optional[int] = None, as_of: Optional[datetime] = None,
+                   source_path: Optional[str] = None) -> int:
+        """as_of fixes "now" for idle/SLO checks (deterministic fixture runs);
+        source_path overrides the configured fixture file for this run only."""
         if source == "upload" and not self.settings.redaction_enabled:
             raise PermissionError("uploads are refused while redaction is disabled")
         with session_scope() as s:
             run = t.Run(
                 source=source, upload_id=upload_id, status="queued",
                 synthetic=(source == "fixtures" and self.settings.synthetic),
-                as_of=datetime.now(timezone.utc), config_hash=self.settings.config_hash,
+                as_of=as_of or datetime.now(timezone.utc), config_hash=self.settings.config_hash,
                 provider=self.provider.name, model=self.provider.model,
                 temperature=self.provider.effective_temperature,
                 prompt_versions={k: p.version for k, p in self.prompts.items()},
             )
             s.add(run)
             s.flush()
+            if source_path:
+                self._source_override[run.id] = source_path
             return run.id
 
     def submit(self, run_id: int):
@@ -58,6 +64,8 @@ class AuditService:
 
     # ------------------------------------------------------------------ work
     def _source_path(self, run: t.Run, s) -> str:
+        if run.id in self._source_override:
+            return self._source_override[run.id]
         if run.source == "fixtures":
             return str(self.settings.path(self.settings.app["data_source"]["fixtures_path"]))
         upload = s.get(t.Upload, run.upload_id)

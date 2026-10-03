@@ -66,8 +66,8 @@ def build_export(run: t.Run, cases: list[t.Case]) -> bytes:
             (a.idle or {}).get("status") if a else None, (a.idle or {}).get("support_idle_hours") if a else None,
             (a.three_strike or {}).get("status") if a else None, (a.three_strike or {}).get("reason") if a else None,
             a.temperature_value if a else None, a.trajectory if a else None,
-            a.confidence_level if a else None, a.confidence_score if a else None,
-            "; ".join(f"{r['code']}: {r['detail']}" for r in (a.confidence_reasons if a else [])),
+            a.data_completeness if a else None, a.run_agreement if a else None,
+            f"{a.scored_dimensions} of {a.applicable_dimensions}" if a else None,
             ", ".join(sorted({r["code"] for r in (a.review_reasons if a else [])})),
             a.model if a else None,
         ])
@@ -75,8 +75,8 @@ def build_export(run: t.Run, cases: list[t.Case]) -> bytes:
         "Case", "Severity", "Status", "Audit state", "Engineer", "Account", "Opened (UTC)", "Closed (UTC)",
         "Overall /10", "Troubleshooting /10", "Communication /10", "SLO /10", "Idle /10", "3-strike /10",
         "Temperature handling /10", "SLO result", "SLO actual min", "SLO target min", "Idle result",
-        "Support idle hours", "3-strike result", "3-strike reason", "Temperature 1-5", "Trajectory",
-        "Confidence", "Confidence score", "Confidence reasons", "Review reasons", "Model",
+        "Support idle hours", "3-strike result", "3-strike reason", "Customer temperature (end, 1-5)", "Trajectory",
+        "Data completeness", "Run agreement", "Scored dimensions", "Review reasons", "Model",
     ], case_rows)
 
     finding_rows = []

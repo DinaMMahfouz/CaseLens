@@ -185,12 +185,12 @@ def dashboard(run_id: Optional[int] = None, s: Session = Depends(get_session)):
         "dimension_averages": [{"dimension": k, "label": labels[k], "average": round(sum(v) / len(v), 2), "n": len(v)}
                                for k, v in dims.items()],
         "review_reasons": dict(reasons),
-        "confidence": dict(Counter(a.confidence_level or "N/A" for a in audits)),
+        "data_completeness_below_80": sum(1 for a in audits if (a.data_completeness or 0) < 0.8),
     }
 
 
 # ------------------------------------------------------------------ cases
-SORTABLE = {"case_number", "severity", "overall", "opened_at", "confidence_level", "status"}
+SORTABLE = {"case_number", "severity", "overall", "opened_at", "data_completeness", "status"}
 
 
 @router.get("/cases")
@@ -264,7 +264,8 @@ def review_queue(run_id: Optional[int] = None, sort: Literal["severity", "score"
     for r in rows:
         for code in r["review_reasons"]:
             groups[code].append(r)
-    order = ["REDACTION_FAILED", "EVAL_FAILED", "RULE_BREACH", "HOT_CUSTOMER", "LOW_SCORE", "LOW_CONFIDENCE"]
+    order = ["REDACTION_FAILED", "EVAL_FAILED", "RULE_BREACH", "HOT_CUSTOMER", "LOW_SCORE",
+             "INSUFFICIENT_DATA", "EVALUATOR_DISAGREEMENT"]
     return {"run_id": run.id if run else None, "total": len(rows),
             "groups": [{"reason": k, "cases": groups[k]} for k in order if groups.get(k)]}
 

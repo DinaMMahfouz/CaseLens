@@ -22,7 +22,7 @@ def _is_response(item: TimelineItem, any_direction_calls: bool) -> bool:
 def evaluate_slo(case: RedactedCase, rules: dict[str, Any], as_of: datetime) -> SloResult:
     cfg = rules["slo"]["initial_response"]
     if case.severity is None:
-        return SloResult(status="INSUFFICIENT_DATA", reason="severity missing")
+        return SloResult(status="INSUFFICIENT_DATA", reason="severity missing", missing_data=True)
     target = cfg["targets_minutes"].get(case.severity)
     if target is None:
         return SloResult(status="INSUFFICIENT_DATA", severity=case.severity, reason="no target configured")
@@ -32,6 +32,7 @@ def evaluate_slo(case: RedactedCase, rules: dict[str, Any], as_of: datetime) -> 
                      target_minutes=float(target), opened_at=case.opened_at)
     if case.opened_at is None:
         base.reason = "case open time missing"
+        base.missing_data = True
         return base
     if clock == "24x7":
         base.deadline_at = case.opened_at + timedelta(minutes=float(target))
@@ -51,6 +52,7 @@ def evaluate_slo(case: RedactedCase, rules: dict[str, Any], as_of: datetime) -> 
             base.reason = f"first response {first.ref_id} within target"
         elif any(i.occurred_at is None for i in candidates):
             base.reason = "response candidates without timestamps; cannot determine"
+            base.missing_data = True
         else:
             base.status = "BREACHED"
             base.reason = f"first response {first.ref_id} after target"
@@ -58,6 +60,7 @@ def evaluate_slo(case: RedactedCase, rules: dict[str, Any], as_of: datetime) -> 
 
     if candidates:
         base.reason = "response candidates without timestamps; cannot determine"
+        base.missing_data = True
         return base
     end = case.closed_at or as_of
     if elapsed_minutes(case.opened_at, end, clock, bh) > float(target):

@@ -39,6 +39,7 @@ def evaluate_three_strike(case: RedactedCase, closure: Optional[ClosureClassific
     if case.closed_at is None:
         res.status = "INSUFFICIENT_DATA"
         res.reason = "closed time missing"
+        res.missing_data = True
         return res
 
     closed = case.closed_at
@@ -51,6 +52,7 @@ def evaluate_three_strike(case: RedactedCase, closure: Optional[ClosureClassific
     else:
         res.status = "INSUFFICIENT_DATA"
         res.reason = "no timestamped customer contact to count from"
+        res.missing_data = True
         return res
 
     after = res.last_customer_at
@@ -78,7 +80,9 @@ def evaluate_three_strike(case: RedactedCase, closure: Optional[ClosureClassific
         res.reason = f"{len(counted)} contact attempts after the customer's last reply ({res.last_customer_ref})"
     elif untimed:
         res.status = "INSUFFICIENT_DATA"
-        res.reason = f"{len(counted)} timed attempts; {len(untimed)} outbound contact(s) lack timestamps"
+        res.missing_data = True
+        res.reason = (f"{len(counted)} timed {'attempt' if len(counted) == 1 else 'attempts'}; "
+                      f"{len(untimed)} outbound {'contact lacks a timestamp' if len(untimed) == 1 else 'contacts lack timestamps'}")
     else:
         res.status = "APPLIED_INCORRECTLY"
         refs = ", ".join(a.ref_id for a in res.attempts) or "none"

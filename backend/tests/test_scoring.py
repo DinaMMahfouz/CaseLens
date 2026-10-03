@@ -1,24 +1,29 @@
 from __future__ import annotations
 
+import copy
+
 from app.llm.evaluator import EvalRun
 from app.rules.results import IdleResult, SloResult, ThreeStrikeResult
-from app.scoring.confidence import compute_confidence
+from app.scoring.quality import compute_quality
 from app.scoring.routing import route
-from app.scoring.score import aggregate, compute_dimensions, normalize, overall_score
+from app.scoring.score import aggregate, compute_dimensions, coverage, normalize, overall_score
 
 
-def _run(rubric, score, status="OK", idx=0, retries=0, dropped=0, trajectory=None):
-    res = {"status": status, "score": score}
-    if trajectory:
-        res["trajectory"] = trajectory
-    return EvalRun(rubric=rubric, run_index=idx, status=status, result=res, retries=retries, dropped_findings=dropped)
+def _run(rubric, score, status="OK", idx=0):
+    return EvalRun(rubric=rubric, run_index=idx, status=status, result={"status": status, "score": score})
 
 
-def _llm(t=(4, 4), c=(3, 3), temp=(2, 2), traj="stable"):
+def _temp(series, idx=0):
+    res = {"status": "OK", "score": series[-1],
+           "readings": [{"ref_id": f"E{i}", "score": s} for i, s in enumerate(series)]}
+    return EvalRun(rubric="temperature", run_index=idx, status="OK", result=res)
+
+
+def _llm(t=(4, 4), c=(3, 3), temp=(2, 2)):
     return {
-        "troubleshooting": aggregate("troubleshooting", [_run("troubleshooting", s, idx=i) for i, s in enumerate(t)], 1),
-        "communication": aggregate("communication", [_run("communication", s, idx=i) for i, s in enumerate(c)], 1),
-        "temperature": aggregate("temperature", [_run("temperature", s, idx=i, trajectory=traj) for i, s in enumerate(temp)], 1),
+        "troubleshooting": aggregate("troubleshooting", [_run("troubleshooting", s, idx=i) for i, s in enumerate(t)]),
+        "communication": aggregate("communication", [_run("communication", s, idx=i) for i, s in enumerate(c)]),
+        "temperature": aggregate("temperature", [_temp(list(temp), 0), _temp(list(temp), 1)]),
     }
 
 
@@ -35,11 +40,12 @@ def test_normalization_modes():
 def test_weighted_overall_with_not_applicable_renormalized(settings):
     dims = compute_dimensions(SLO_MET, IDLE_OK, STRIKE_NA, _llm(), settings.scoring)
     by = {d["dimension"]: d for d in dims}
-    assert by["three_strike"]["status"] == "EXCLUDED"
-    # weights 30,20,20,15,5 (three_strike 10 excluded) -> total 90
+    assert by["three_strike"]["status"] == "EXCLUDED" and by["three_strike"]["note"] == "Not applicable"
+    # temperature series [2, 2] -> stable -> 3/5 -> 5.0 (current formula)
     expected = (7.5 * 30 + 5 * 20 + 10 * 20 + 10 * 15 + 5 * 5) / 90
     assert overall_score(dims) == round(expected, 2)
     assert abs(sum(d["effective_weight"] for d in dims) - 1) < 0.001
+    assert coverage(dims) == (5, 5)
 
 
 def test_breach_and_incorrect_score_zero(settings):
@@ -49,43 +55,38 @@ def test_breach_and_incorrect_score_zero(settings):
     assert by["slo"]["score"] == 0 and by["idle"]["score"] == 0 and by["three_strike"]["score"] == 0
 
 
-def test_insufficient_data_excluded(settings):
-    dims = compute_dimensions(SloResult(status="INSUFFICIENT_DATA"), IDLE_OK, STRIKE_NA, _llm(), settings.scoring)
-    assert {d["dimension"]: d["status"] for d in dims}["slo"] == "EXCLUDED"
+def test_insufficient_data_excluded_with_reason(settings):
+    slo = SloResult(status="INSUFFICIENT_DATA", reason="case open time missing", missing_data=True)
+    dims = {d["dimension"]: d for d in compute_dimensions(slo, IDLE_OK, STRIKE_NA, _llm(), settings.scoring)}
+    assert dims["slo"]["status"] == "EXCLUDED" and dims["slo"]["missing_data"]
+    assert dims["slo"]["note"] == "Insufficient data – case open time missing"
 
 
-def test_temperature_handling_uses_worse_trajectory(settings):
-    llm = _llm()
-    llm["temperature"] = aggregate("temperature", [_run("temperature", 3, trajectory="stable"),
-                                                   _run("temperature", 3, idx=1, trajectory="worsening")], 1)
-    assert llm["temperature"].trajectory == "worsening" and llm["temperature"].disagreement
-    by = {d["dimension"]: d for d in compute_dimensions(SLO_MET, IDLE_OK, STRIKE_NA, llm, settings.scoring)}
-    assert by["temperature_handling"]["score"] == 0
+def test_temperature_handling_modes(settings):
+    worsening = _llm(temp=(1, 3))          # end > start
+    by = {d["dimension"]: d for d in compute_dimensions(SLO_MET, IDLE_OK, STRIKE_NA, worsening, settings.scoring)}
+    assert by["temperature_handling"]["input"] == "worsening" and by["temperature_handling"]["score"] == 0
+    cfg = copy.deepcopy(settings.scoring)
+    cfg["temperature_handling"]["mode"] = "outcome_based"
+    stable_high = _llm(temp=(4, 4))
+    by = {d["dimension"]: d for d in compute_dimensions(SLO_MET, IDLE_OK, STRIKE_NA, stable_high, cfg)}
+    assert by["temperature_handling"]["score"] == normalize(2, "linear_0_10")
 
 
-def test_confidence_starts_high_and_drops(settings):
-    score, level, reasons = compute_confidence(_llm(), [], [], 5, settings.scoring)
-    assert (score, level, reasons) == (1.0, "HIGH", [])
-    score, level, reasons = compute_confidence(_llm(t=(2, 5)), [], ["severity"], 2, settings.scoring)
-    codes = {r["code"] for r in reasons}
-    assert codes == {"RUN_DISAGREEMENT", "MISSING_FIELD", "SHORT_CASE"}
-    assert score == 0.5 and level == "MEDIUM"
-
-
-def test_confidence_counts_retries_dropped_and_insufficient(settings):
-    llm = _llm()
-    llm["communication"] = aggregate("communication", [_run("communication", None, status="INSUFFICIENT_EVIDENCE"),
-                                                       _run("communication", None, status="INSUFFICIENT_EVIDENCE", idx=1)], 1)
-    llm["troubleshooting"].runs[0].retries = 1
-    llm["troubleshooting"].runs[0].dropped_findings = 2
-    score, level, reasons = compute_confidence(llm, [], [], 5, settings.scoring)
-    assert round(score, 3) == round(1 - 0.2 - 0.1 - 0.1, 3) and level == "MEDIUM"
+def test_data_completeness(settings):
+    q = compute_quality(_llm(), [], 5, settings.scoring, settings.review)
+    assert q.data_completeness == 1.0 and q.run_agreement == 1.0 and not q.disagreement
+    q = compute_quality(_llm(), ["severity"], 2, settings.scoring, settings.review)
+    assert q.data_completeness == 0.7
+    assert [r["code"] for r in q.completeness_reasons] == ["MISSING_FIELD", "SHORT_CASE"]
 
 
 def test_routing_reasons(settings):
-    r = route("OK", 3.5, "LOW", "BREACHED", "APPLIED_INCORRECTLY", 4.5, "worsening", settings.review)
-    assert [x["code"] for x in r] == ["LOW_SCORE", "LOW_CONFIDENCE", "RULE_BREACH", "RULE_BREACH", "HOT_CUSTOMER"]
-    assert route("OK", 8, "HIGH", "MET", "NOT_APPLICABLE", 2, "stable", settings.review) == []
-    assert [x["code"] for x in route("OK", 8, "HIGH", "MET", None, 2, "worsening", settings.review)] == ["HOT_CUSTOMER"]
-    assert [x["code"] for x in route("EVAL_FAILED", None, "HIGH", "MET", None, None, None, settings.review)] == ["EVAL_FAILED"]
-    assert [x["code"] for x in route("REDACTION_FAILED", None, None, None, None, None, None, settings.review)] == ["REDACTION_FAILED"]
+    r = route("OK", 3.5, slo_status="BREACHED", strike_status="APPLIED_INCORRECTLY", temp_start=2,
+              temp_end=4.5, temp_peak=4.5, cfg=settings.review)
+    assert [x["code"] for x in r] == ["LOW_SCORE", "RULE_BREACH", "HOT_CUSTOMER"]
+    assert "SLO" in r[1]["detail"] and "3-strike" in r[1]["detail"]
+    assert route("OK", 8, slo_status="MET", strike_status="NOT_APPLICABLE", temp_start=2, temp_end=2,
+                 temp_peak=2, cfg=settings.review) == []
+    assert [x["code"] for x in route("EVAL_FAILED", None, cfg=settings.review)] == ["EVAL_FAILED"]
+    assert [x["code"] for x in route("REDACTION_FAILED", None, cfg=settings.review)] == ["REDACTION_FAILED"]

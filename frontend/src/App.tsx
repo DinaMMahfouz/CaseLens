@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
 import type { Session } from "@supabase/supabase-js";
-import { api, type Profile, type Run } from "./api";
+import { api, type Profile, type Run, type Tse } from "./api";
 import { AppContext } from "./lib/hooks";
 import { configured, initialAuthType, supabase } from "./lib/supabase";
 import { fmtDate } from "./lib/format";
@@ -50,12 +50,12 @@ function Shell({ profile }: { profile: Profile }) {
   const [runs, setRuns] = useState<Run[]>([]);
   const [runId, setRunId] = useState<string | undefined>(undefined);
   const [tse, setTse] = useState<string | undefined>(undefined);
-  const [tses, setTses] = useState<string[]>([]);
+  const [tses, setTses] = useState<Tse[]>([]);
 
   useEffect(() => { api.runs().then(setRuns).catch(() => setRuns([])); }, []);
   useEffect(() => {
-    if (isManager) api.tses(runId).then(setTses).catch(() => setTses([]));
-  }, [isManager, runId]);
+    if (isManager) api.tses().then(setTses).catch(() => setTses([]));
+  }, [isManager]);
 
   const ctx = useMemo(() => ({ profile, isManager, runs, runId, setRunId, tse: isManager ? tse : undefined, setTse, tses }),
     [profile, isManager, runs, runId, tse, tses]);
@@ -92,7 +92,7 @@ function Shell({ profile }: { profile: Profile }) {
                   <select value={tse ?? ""} onChange={(e) => setTse(e.target.value || undefined)} aria-label="Select TSE"
                           className="text-xs py-1 max-w-[11rem]">
                     <option value="">All TSEs</option>
-                    {tses.map((n) => <option key={n} value={n}>{n}</option>)}
+                    {tses.map((t) => <option key={t.id} value={t.id}>{t.display_name}</option>)}
                   </select>
                 </label>
               )}

@@ -145,14 +145,10 @@ export default function Overview() {
             </ul>
           )}
           <div className="mt-4 pt-3 border-t border-line">
-            <div className="panel-title mb-2">Confidence</div>
-            <div className="flex gap-2 flex-wrap text-xs">
-              {(["HIGH", "MEDIUM", "LOW"] as const).map((l) => (
-                <span key={l} className="rounded-md border border-line px-2 py-1">
-                  <span className="text-muted">{humanize(l)}</span> <span className="mono">{data.confidence[l] ?? 0}</span>
-                </span>
-              ))}
-            </div>
+            <div className="panel-title mb-2">Data completeness</div>
+            <p className="text-xs text-muted">
+              <span className="mono text-text">{data.low_completeness}</span> of {data.kpis.cases} cases below 80% complete source data
+            </p>
           </div>
         </Panel>
       </div>

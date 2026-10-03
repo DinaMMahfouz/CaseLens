@@ -1,22 +1,27 @@
 import { useCallback, useRef, useState, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, type Audit, type CaseDetail, type Evidence, type Finding, type Item } from "../api";
+import { api, type Audit, type CaseDetail, type Evidence, type Finding, type Item, type LlmDim } from "../api";
 import Timeline from "../components/Timeline";
-import { Empty, ErrorNote, Loading, OutcomePill, Panel, Pill, ReasonPill, ScoreBadge, SeverityPill } from "../components/ui";
+import { Empty, ErrorNote, ErrorState, Loading, OutcomePill, Panel, Pill, ReasonPill, ScoreBadge, SeverityPill } from "../components/ui";
 import { useAsync, useRun } from "../lib/hooks";
-import { C, fmtDate, fmtDuration, fmtScore, humanize, outcomeColor, scoreColor } from "../lib/format";
+import { C, NO_DATE_TITLE, fmtDate, fmtDuration, fmtScore, humanize, outcomeColor, plural, runsSummary, scoreColor, temperatureLabel } from "../lib/format";
 import { ACTION_LABEL } from "./Cases";
 
 const KIND_LABEL: Record<string, string> = {
   top_issues: "Top issues", missed_steps: "Missed steps", repeated_requests: "Repeated requests",
   shift_points: "Temperature shifts", handover_issues: "Handover issues",
 };
-const DIM_LABEL: Record<string, string> = { troubleshooting: "Troubleshooting", temperature: "Customer temperature", communication: "Communication" };
+const DIM_LABEL: Record<string, string> = { troubleshooting: "Troubleshooting", communication: "Communication" };
+
+const FIELD_LABEL: Record<string, string> = {
+  opened_at: "open time", closed_at: "close time", severity: "severity", owner: "case owner",
+  item_timestamps: "message timestamps", call_direction: "call direction",
+};
 
 export default function CaseDetailPage() {
   const { id } = useParams();
-  const { data, error, loading, reload } = useAsync(() => api.case(id ?? ""), [id]);
-  const { runs, isManager, profile } = useRun();
+  const { runs, isManager, profile, runId } = useRun();
+  const { data, error, loading, reload } = useAsync(() => api.case(id ?? "", runId), [id, runId]);
   const run = runs.find((r) => r.id === data?.run_id) ?? null;
   const [selected, setSelected] = useState<string | null>(null);
   const [flashKey, setFlashKey] = useState(0);
@@ -29,8 +34,8 @@ export default function CaseDetailPage() {
   }, []);
 
   if (loading && !data) return <Loading />;
-  if (error) return <ErrorNote error={error} />;
-  if (!data) return null;
+  if (error) return <ErrorState error={error} onRetry={reload} />;
+  if (!data) return <CaseNotFound id={id ?? ""} />;
   const a = data.audit;
 
   return (
@@ -85,14 +90,14 @@ function Header({ c }: { c: CaseDetail }) {
           </div>
           <p className="mt-2 text-[15px] max-w-3xl">{c.subject || <span className="text-muted">No subject</span>}</p>
           <dl className="mt-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-x-6 gap-y-2 text-sm">
-            <Meta k="Engineer"><span className="mono text-xs">{c.owner || "—"}</span></Meta>
+            <Meta k="TSE">{c.owner || "—"}</Meta>
             <Meta k="Account"><span className="mono text-xs">{c.account || "—"}</span></Meta>
             <Meta k="Product">{c.product || "—"}</Meta>
-            <Meta k="Opened">{fmtDate(c.opened_at)}</Meta>
-            <Meta k="Closed">{fmtDate(c.closed_at)}</Meta>
+            <Meta k="Opened"><DateValue iso={c.opened_at} /></Meta>
+            <Meta k="Closed"><DateValue iso={c.closed_at} /></Meta>
           </dl>
           {c.missing_fields.length > 0 && (
-            <div className="mt-3 text-xs text-warning">Missing fields: {c.missing_fields.map(humanize).join(", ")}</div>
+            <div className="mt-3 text-xs text-warning">Missing in source: {c.missing_fields.map((f) => FIELD_LABEL[f] ?? humanize(f)).join(", ")}</div>
           )}
         </div>
         {a && (
@@ -100,15 +105,28 @@ function Header({ c }: { c: CaseDetail }) {
             <div>
               <div className="panel-title mb-1">Overall</div>
               <ScoreBadge score={a.overall} size="lg" />
+              <div className="text-xs text-muted mt-1" title="Dimensions marked not applicable are not counted.">
+                Scored on {a.scored_dimensions} of {plural(a.applicable_dimensions, "dimension")}
+              </div>
               {c.review?.score_override != null && (
                 <div className="text-xs text-warning mt-1">Reviewer override: <span className="mono">{c.review.score_override.toFixed(1)}</span></div>
               )}
             </div>
             <div>
-              <div className="panel-title mb-1.5">Confidence</div>
-              <OutcomePill value={a.confidence_level} />
-              <div className="mono text-xs text-muted mt-1">{a.confidence_score?.toFixed(2)}</div>
+              <div className="panel-title mb-1.5" title="How complete the source data is for scoring this case.">Data completeness</div>
+              <span className="mono text-lg" style={{ color: (a.data_completeness ?? 0) >= 0.8 ? C.text : C.warning }}>
+                {a.data_completeness == null ? "—" : `${Math.round(a.data_completeness * 100)}%`}
+              </span>
+              {a.is_heuristic && (
+                <div className="mt-1"><Pill color={C.info} title="Scored by the offline heuristic evaluator, not an LLM.">Heuristic</Pill></div>
+              )}
             </div>
+            {a.run_agreement != null && (
+              <div>
+                <div className="panel-title mb-1.5" title="Share of evaluation runs giving the most common score, on the least-agreeing dimension.">Run agreement</div>
+                <span className="mono text-lg">{Math.round(a.run_agreement * 100)}%</span>
+              </div>
+            )}
             <div className="max-w-[220px]">
               <div className="panel-title mb-1.5">Review routing</div>
               {a.review_reasons.length ? (
@@ -151,7 +169,7 @@ function ScorePanel({ a }: { a: Audit }) {
             <tr key={d.dimension} className={`border-b border-line/50 last:border-0 ${d.status === "EXCLUDED" ? "text-muted" : ""}`}>
               <td className="py-2">{d.label}</td>
               <td>{d.input.includes("/5") ? <span className="mono text-xs">{d.input}</span> : <OutcomePill value={d.input} />}</td>
-              <td className="text-right mono" style={{ color: d.status === "SCORED" ? scoreColor(d.score) : undefined }}>{d.status === "SCORED" ? fmtScore(d.score) : "excluded"}</td>
+              <td className="text-right mono" style={{ color: d.status === "SCORED" ? scoreColor(d.score) : undefined }}>{d.status === "SCORED" ? fmtScore(d.score) : <span title={d.note}>excluded</span>}</td>
               <td className="text-right mono">{d.weight}</td>
               <td className="text-right mono">{d.status === "SCORED" ? `${(d.effective_weight * 100).toFixed(0)}%` : "—"}</td>
               <td className="text-right mono">{d.status === "SCORED" ? ((d.score ?? 0) * d.effective_weight).toFixed(2) : "—"}</td>
@@ -167,13 +185,15 @@ function ScorePanel({ a }: { a: Audit }) {
       </table>
       {a.state === "EVAL_FAILED" && <p className="text-xs text-danger mt-2">LLM evaluation failed ({a.error_kind}); no overall score is produced. Deterministic checks remain valid.</p>}
       <div className="mt-4 pt-3 border-t border-line">
-        <div className="panel-title mb-2">Confidence reasons</div>
-        {a.confidence_reasons.length === 0 ? <p className="text-xs text-muted">No penalties applied.</p> : (
+        <div className="panel-title mb-2">Data completeness</div>
+        {a.completeness_reasons.length === 0 ? <p className="text-xs text-muted">Source data is complete.</p> : (
           <ul className="text-sm space-y-1">
-            {a.confidence_reasons.map((r, i) => (
+            {a.completeness_reasons.map((r, i) => (
               <li key={i} className="flex justify-between gap-3">
-                <span><span className="mono text-xs text-warning mr-2">{r.code}</span>{r.detail}</span>
-                <span className="mono text-xs text-muted">−{r.penalty.toFixed(2)}</span>
+                <span>{r.code === "MISSING_FIELD"
+                  ? `Missing ${FIELD_LABEL[r.field ?? ""] ?? humanize(r.field ?? "")}`
+                  : `Short case: ${plural(r.communications ?? 0, "customer-facing communication")}`}</span>
+                <span className="mono text-xs text-muted">−{Math.round(r.penalty * 100)}%</span>
               </li>
             ))}
           </ul>
@@ -226,7 +246,9 @@ function ChecksPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void 
                 </li>
               ))}
             </ul>
-          ) : <p className="text-xs text-muted mt-3">No gaps above the threshold.</p>}
+          ) : idle?.status === "INSUFFICIENT_DATA"
+            ? <p className="text-xs text-warning mt-3" data-testid="idle-reason">Not checked: {idle.reason}.</p>
+            : <p className="text-xs text-muted mt-3">No gaps above the threshold.</p>}
         </div>
         <div className="rounded-lg border border-line p-3">
           <div className="flex items-center justify-between"><span className="text-sm font-medium">3-strike rule</span><OutcomePill value={ts?.status} /></div>
@@ -270,9 +292,9 @@ function LlmPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void }) 
   const byDim: Record<string, Finding[]> = {};
   a.findings.forEach((f) => { (byDim[f.dimension] ??= []).push(f); });
   return (
-    <Panel title="LLM evaluations" action={<span className="text-xs text-muted">{a.unsupported_count} unsupported finding(s) dropped · {a.retry_count} retry(ies)</span>}>
+    <Panel title="LLM evaluations" action={<span className="text-xs text-muted">{plural(a.unsupported_count, "unsupported finding")} dropped · {plural(a.retry_count, "retry")}</span>}>
       <div className="space-y-4">
-        {(["troubleshooting", "communication", "temperature"] as const).map((dim) => {
+        {(["troubleshooting", "communication"] as const).map((dim) => {
           const d = a.llm[dim];
           if (!d) return null;
           const groups: Record<string, Finding[]> = {};
@@ -282,13 +304,9 @@ function LlmPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void }) 
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-sm font-medium">{DIM_LABEL[dim]}</span>
                 {d.status === "OK" ? (
-                  <span className="mono text-sm" style={{ color: dim === "temperature" ? ((d.score ?? 0) >= 4 ? C.danger : (d.score ?? 0) >= 3 ? C.warning : C.success) : scoreColor(((d.score ?? 1) - 1) * 2.5) }}>
-                    {d.score}/5
-                  </span>
+                  <span className="mono text-sm" style={{ color: scoreColor(((d.score ?? 1) - 1) * 2.5) }}>{d.score}/5</span>
                 ) : <OutcomePill value={d.status} />}
-                {d.trajectory && <Pill color={d.trajectory === "worsening" ? C.danger : d.trajectory === "improving" ? C.success : C.muted}>{d.trajectory}</Pill>}
-                <span className="text-[11px] text-muted ml-auto">runs: <span className="mono">{d.run_scores?.map((x) => x ?? "–").join(" / ")}</span>
-                  {d.disagreement && <span className="text-warning ml-1">disagree</span>}</span>
+                <RunsLabel d={d} disagree={a.agreement_details?.[dim]?.disagreement} />
               </div>
               {d.summary && <p className="text-sm text-muted mt-2">{d.summary}</p>}
               {Object.entries(groups).map(([kind, fs]) => (
@@ -305,8 +323,65 @@ function LlmPanel({ a, onSelect }: { a: Audit; onSelect: (r: string) => void }) 
             </div>
           );
         })}
+        <CustomerTemperature a={a} findings={byDim.temperature ?? []} onSelect={onSelect} />
       </div>
     </Panel>
+  );
+}
+
+function RunsLabel({ d, disagree }: { d: LlmDim; disagree?: boolean }) {
+  const r = runsSummary(d);
+  return (
+    <span className="text-[11px] text-muted ml-auto" data-testid="runs-label">
+      Run scores <span className="mono">{r.scores || "—"}</span> · {r.completed}
+      {disagree && <span className="text-warning ml-1">· runs disagree</span>}
+    </span>
+  );
+}
+
+/** Context only, never scored: the customer's state. Reads the same stored readings as the
+ *  "Temperature handling" dimension in the score table. */
+function CustomerTemperature({ a, findings, onSelect }: { a: Audit; findings: Finding[]; onSelect: (r: string) => void }) {
+  const d = a.llm.temperature;
+  if (!d) return null;
+  const ok = d.status === "OK" && a.temp_end != null;
+  return (
+    <div className="rounded-lg border border-dashed border-line p-3" data-testid="customer-temperature">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-medium">Customer temperature</span>
+        <span className="text-[11px] text-muted">context · not part of the score</span>
+        {d && <RunsLabel d={d} disagree={a.agreement_details?.temperature?.disagreement} />}
+      </div>
+      {ok ? (
+        <p className="text-sm mt-2">
+          Started <b>{temperatureLabel(a.temp_start)}</b>, ended <b>{temperatureLabel(a.temp_end)}</b>
+          {a.temp_peak != null && a.temp_peak > Math.max(a.temp_start ?? 0, a.temp_end ?? 0) && <>, peaked <b>{temperatureLabel(a.temp_peak)}</b></>}
+          <span className="text-muted"> · {humanize(a.trajectory)}</span>
+        </p>
+      ) : <p className="text-sm text-muted mt-2">Not enough customer messages to read the temperature.</p>}
+      {findings.length > 0 && (
+        <ul className="space-y-1.5 mt-2">
+          {findings.map((f) => <li key={f.id} className="text-sm text-muted">{f.text}<EvidenceChips ev={f.evidence} onSelect={onSelect} /></li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function DateValue({ iso }: { iso: string | null }) {
+  return iso ? <span title={new Date(iso).toISOString()}>{fmtDate(iso)}</span>
+             : <span title={NO_DATE_TITLE} className="text-muted">—</span>;
+}
+
+function CaseNotFound({ id }: { id: string }) {
+  return (
+    <div className="panel p-8 text-center max-w-lg mx-auto mt-10" role="alert">
+      <h1 className="text-lg font-semibold">Case not found</h1>
+      <p className="text-sm text-muted mt-2">
+        No case <span className="mono text-text">{id.length > 40 ? id.slice(0, 40) + "…" : id}</span> exists in this run, or it isn't visible to your account.
+      </p>
+      <Link to="/cases" className="btn-ghost mt-5">← Back to cases</Link>
+    </div>
   );
 }
 

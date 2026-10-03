@@ -18,6 +18,7 @@ class SloResult(BaseModel):
     response_at: Optional[datetime] = None
     deadline_at: Optional[datetime] = None
     reason: str = ""
+    missing_data: bool = False        # INSUFFICIENT_DATA caused by missing source fields
 
 
 class IdleWindow(BaseModel):
@@ -37,6 +38,7 @@ class IdleResult(BaseModel):
     support_idle_hours: float = 0.0
     customer_idle_hours: float = 0.0
     reason: str = ""
+    missing_data: bool = False
 
 
 class Attempt(BaseModel):
@@ -61,3 +63,4 @@ class ThreeStrikeResult(BaseModel):
     last_customer_at: Optional[datetime] = None
     closed_at: Optional[datetime] = None
     reason: str = ""
+    missing_data: bool = False

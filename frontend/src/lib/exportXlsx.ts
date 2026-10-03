@@ -1,5 +1,6 @@
 // Client-side Excel export (Summary, Cases, Findings, Review Actions). Redacted data only.
 import { api } from "../api";
+import { temperatureLabel } from "./format";
 
 const DIMS = ["troubleshooting", "communication", "slo", "idle", "three_strike", "temperature_handling"];
 
@@ -40,15 +41,15 @@ export async function downloadExport(runId?: string, tse?: string) {
   sheet("Cases", ["Case", "Severity", "Status", "Audit state", "TSE", "Account", "Opened (UTC)", "Closed (UTC)", "Overall /10",
     "Troubleshooting /10", "Communication /10", "SLO /10", "Idle /10", "3-strike /10", "Temperature handling /10",
     "SLO result", "SLO actual min", "SLO target min", "Idle result", "Support idle hours", "3-strike result", "3-strike reason",
-    "Temperature 1-5", "Trajectory", "Confidence", "Confidence score", "Confidence reasons", "Review reasons", "Model"],
+    "Customer temperature (end)", "Trajectory", "Data completeness", "Run agreement", "Scored dimensions", "Review reasons", "Model"],
   cases.map((c) => {
     const a = audit(c);
     const d = Object.fromEntries((a?.dimensions ?? []).map((x: { dimension: string }) => [x.dimension, x]));
-    return [c.case_number, c.severity, c.status, c.state, c.owner_name, c.account_label, c.opened_at, c.closed_at, a?.overall ?? null,
+    return [c.case_number, c.severity, c.status, c.state, (Array.isArray(c.tses) ? c.tses[0] : c.tses)?.display_name ?? "", c.account_label, c.opened_at, c.closed_at, a?.overall ?? null,
       ...DIMS.map((k) => (d[k] && d[k].status === "SCORED" ? d[k].score : "excluded")),
       a?.slo?.status, a?.slo?.actual_minutes, a?.slo?.target_minutes, a?.idle?.status, a?.idle?.support_idle_hours,
-      a?.three_strike?.status, a?.three_strike?.reason, a?.temperature_value, a?.trajectory, a?.confidence_level, a?.confidence_score,
-      (a?.confidence_reasons ?? []).map((r: { code: string; detail: string }) => `${r.code}: ${r.detail}`).join("; "),
+      a?.three_strike?.status, a?.three_strike?.reason, temperatureLabel(a?.temp_end), a?.trajectory, a?.data_completeness, a?.run_agreement,
+      a ? `${a.scored_dimensions} of ${a.applicable_dimensions}` : null,
       [...new Set((a?.review_reasons ?? []).map((r: { code: string }) => r.code))].sort().join(", "), a?.model];
   }));
 

@@ -20,27 +20,34 @@ deterministic:
   idle:           {NO_SUPPORT_IDLE: 10, SUPPORT_IDLE: 0}
   three_strike:   {APPLIED_CORRECTLY: 10, APPLIED_INCORRECTLY: 0}
 
-# Temperature handling is scored from the customer's trajectory (1-5 scale).
+# ---------------------------------------------------------------- temperature (one source)
+# The temperature rubric returns one reading (1-5) per customer message. From those readings:
+#   start = first reading, end = last reading, peak = highest reading (mean across runs),
+#   trajectory = end vs start: worsening if end > start, improving if end < start, else stable.
+# Two measures read these SAME stored values:
+#   * Customer temperature (context only, not scored): label of the end reading.
+#   * Temperature handling (the TSE's scored dimension): see below.
+customer_temperature:
+  labels: {1: Calm, 2: Neutral, 3: Frustrated, 4: Angry, 5: Angry}
+
 temperature_handling:
+  # trajectory_map (CURRENT, default): improving 5, stable 3, worsening 1 -> normalized to /10
+  #   (linear_0_10: 5 -> 10.0, 3 -> 5.0, 1 -> 0.0).
+  # outcome_based (option, off): de-escalated or stable-calm = 5 (10/10); stable but elevated
+  #   (end > calm_at_most) = stable_elevated; escalated = escalated.
+  mode: trajectory_map
   trajectory_scores:
     improving: 5
     stable: 3
     worsening: 1
+  outcome_scores: {de_escalated: 5, stable_calm: 5, stable_elevated: 2, escalated: 1}
+  calm_at_most: 2
 
-# When the two LLM runs differ, the score used is the mean of both runs.
-# When trajectories differ, the worse trajectory is used.
+# When repeated LLM runs differ, the score used is the mean of the runs.
 
-confidence:
-  start: 1.0
-  penalties:
-    run_disagreement: 0.20          # per dimension where the runs differ by > max_score_gap
-    insufficient_evidence: 0.10     # per INSUFFICIENT_EVIDENCE result
-    unsupported_finding: 0.05       # per finding dropped for missing/invalid evidence
-    schema_retry: 0.10              # per retry caused by invalid output
-    missing_key_field: 0.15         # per missing key field (severity, opened_at, owner, comm timestamps)
+# ---------------------------------------------------------------- audit quality (computed)
+quality:
+  data_completeness:                # 0-1; routing threshold lives in review.yaml
+    missing_key_field: 0.15         # per missing key field (severity, opened_at, owner, item timestamps)
     short_case: 0.15                # fewer than min_communications customer-facing communications
-  max_score_gap: 1
-  min_communications: 3
-  levels:
-    HIGH: 0.80
-    MEDIUM: 0.50                    # below MEDIUM = LOW
+    min_communications: 3

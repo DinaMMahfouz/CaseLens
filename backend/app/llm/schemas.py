@@ -43,14 +43,23 @@ class TroubleshootingEval(_Scored):
     repeated_requests: list[Finding] = Field(default_factory=list, max_length=10)
 
 
+class Reading(_Strict):
+    """Temperature of one customer message (1 calm .. 5 escalation risk)."""
+    ref_id: str = Field(min_length=1, max_length=16)
+    score: int = Field(ge=1, le=5)
+
+
 class TemperatureEval(_Scored):
+    # Start, end, peak and trajectory are computed from `readings` in code; a model-supplied
+    # trajectory is accepted for backwards compatibility but never used.
+    readings: list[Reading] = Field(default_factory=list, max_length=60)
     trajectory: Optional[Literal["improving", "stable", "worsening"]] = None
     shift_points: list[Finding] = Field(default_factory=list, max_length=10)
 
     @model_validator(mode="after")
-    def _trajectory_matches_status(self):
-        if self.status == "OK" and self.trajectory is None:
-            raise ValueError("trajectory required when status is OK")
+    def _readings_match_status(self):
+        if self.status == "OK" and not self.readings:
+            raise ValueError("readings required when status is OK")
         return self
 
 

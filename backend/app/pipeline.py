@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.domain.models import RawCase, RedactedCase
@@ -21,9 +21,9 @@ from app.rules.idle import evaluate_idle
 from app.rules.results import ClosureClassification, IdleResult, SloResult, ThreeStrikeResult
 from app.rules.slo import evaluate_slo
 from app.rules.three_strike import evaluate_three_strike
-from app.scoring.confidence import compute_confidence
+from app.scoring.quality import compute_quality
 from app.scoring.routing import route
-from app.scoring.score import DimAgg, aggregate, compute_dimensions, overall_score
+from app.scoring.score import DimAgg, aggregate, compute_dimensions, coverage, overall_score
 from app.settings import Settings
 
 LLM_RUBRICS = ("troubleshooting", "temperature", "communication")
@@ -40,17 +40,25 @@ class CaseAudit:
     llm: dict[str, Any] = field(default_factory=dict)
     dimensions: list[dict[str, Any]] = field(default_factory=list)
     overall: Optional[float] = None
-    confidence_score: Optional[float] = None
-    confidence_level: Optional[str] = None
-    confidence_reasons: list[dict[str, Any]] = field(default_factory=list)
+    scored_dimensions: int = 0
+    applicable_dimensions: int = 0
+    data_completeness: Optional[float] = None
+    completeness_reasons: list[dict[str, Any]] = field(default_factory=list)
+    run_agreement: Optional[float] = None
+    agreement_details: dict[str, Any] = field(default_factory=dict)
+    is_heuristic: bool = False
+    audited_at: Optional[datetime] = None
     review_reasons: list[dict[str, str]] = field(default_factory=list)
     findings: list[dict[str, Any]] = field(default_factory=list)
     unsupported_count: int = 0
     retry_count: int = 0
     prompt_versions: dict[str, str] = field(default_factory=dict)
     error_kind: str = ""
-    temperature_value: Optional[float] = None
+    temperature_value: Optional[float] = None   # = temp_end (one source)
     trajectory: Optional[str] = None
+    temp_start: Optional[float] = None
+    temp_end: Optional[float] = None
+    temp_peak: Optional[float] = None
 
 
 def _fields(case: RedactedCase) -> dict[str, str]:
@@ -122,7 +130,6 @@ class AuditEngine:
         msg = user_message(payload)
         refs = case.ref_timestamps()
         redact = lambda text: self.redactor.redact_output(text, ctx)  # noqa: E731
-        max_gap = float(self.s.scoring["confidence"].get("max_score_gap", 1))
         llm: dict[str, DimAgg] = {}
         for rubric in LLM_RUBRICS:
             runs = [run_evaluation(self.provider, self.prompts[rubric], msg, i, refs, redact)
@@ -130,7 +137,7 @@ class AuditEngine:
             for r in runs:
                 log_event("llm_eval", case_number=case.case_number, dimension=rubric, run_index=r.run_index,
                           status=r.status, retries=r.retries, error_kind=r.error_kind or None)
-            llm[rubric] = aggregate(rubric, runs, max_gap)
+            llm[rubric] = aggregate(rubric, runs)
 
         closure_runs: list[EvalRun] = []
         closure: Optional[ClosureClassification] = None
@@ -149,11 +156,14 @@ class AuditEngine:
                     explanation=res.get("explanation", ""))
         strike = evaluate_three_strike(case, closure, self.s.rules)
 
-        audit = CaseAudit(case=case, state="OK", slo=slo, idle=idle, three_strike=strike, closure=closure)
+        audit = CaseAudit(case=case, state="OK", slo=slo, idle=idle, three_strike=strike, closure=closure,
+                          audited_at=datetime.now(timezone.utc), is_heuristic=self.provider.name == "mock")
         audit.prompt_versions = {k: p.version for k, p in self.prompts.items()}
         all_runs = [r for a in llm.values() for r in a.runs] + closure_runs
         audit.llm = {k: {"status": a.status, "score": a.score, "trajectory": a.trajectory,
-                         "disagreement": a.disagreement, "run_scores": a.run_scores,
+                         "temp_start": a.temp_start, "temp_end": a.temp_end, "temp_peak": a.temp_peak,
+                         "requested_runs": a.requested_runs, "completed_runs": a.completed_runs,
+                         "run_scores": a.run_scores,
                          "runs": [{"run_index": r.run_index, "status": r.status, "retries": r.retries,
                                    "dropped_findings": r.dropped_findings, "error_kind": r.error_kind,
                                    "result": r.result} for r in a.runs]}
@@ -176,17 +186,25 @@ class AuditEngine:
                 audit.llm = {k: {"status": "FAILED", "runs": []} for k in audit.llm}
                 llm = {k: DimAgg(rubric=k, runs=[]) for k in llm}
 
-        # 6. Scores, confidence, routing ----------------------------------------------------
+        # 6. Scores, quality, routing ---------------------------------------------------------
         temp = llm.get("temperature")
-        audit.temperature_value = temp.score if temp and temp.status == "OK" else None
-        audit.trajectory = temp.trajectory if temp else None
+        if temp and temp.status == "OK":
+            audit.temp_start, audit.temp_end, audit.temp_peak = temp.temp_start, temp.temp_end, temp.temp_peak
+            audit.temperature_value, audit.trajectory = temp.temp_end, temp.trajectory
         audit.dimensions = compute_dimensions(slo, idle, strike, llm, self.s.scoring)
+        audit.scored_dimensions, audit.applicable_dimensions = coverage(audit.dimensions)
         audit.overall = overall_score(audit.dimensions) if audit.state == "OK" else None
         comms = sum(1 for i in case.items if i.customer_facing and not i.is_auto_ack)
-        audit.confidence_score, audit.confidence_level, audit.confidence_reasons = compute_confidence(
-            llm, closure_runs, case.missing_fields, comms, self.s.scoring)
-        audit.review_reasons = route(audit.state, audit.overall, audit.confidence_level, slo.status,
-                                     strike.status, audit.temperature_value, audit.trajectory, self.s.review)
+        q = compute_quality(llm, case.missing_fields, comms, self.s.scoring, self.s.review)
+        audit.data_completeness, audit.completeness_reasons = q.data_completeness, q.completeness_reasons
+        audit.run_agreement, audit.agreement_details = q.run_agreement, q.agreement_details
+        missing = [d["dimension"] for d in audit.dimensions
+                   if d["status"] == "EXCLUDED" and d.get("missing_data")]
+        audit.review_reasons = route(
+            audit.state, audit.overall, slo_status=slo.status, strike_status=strike.status,
+            temp_start=audit.temp_start, temp_end=audit.temp_end, temp_peak=audit.temp_peak,
+            data_completeness=q.data_completeness, excluded_for_missing=missing,
+            disagreement=q.disagreement, cfg=self.s.review)
         if audit.state == "OK":
             for name, agg in llm.items():
                 primary = next((r for r in agg.runs if r.result), None)
@@ -203,6 +221,7 @@ class AuditEngine:
 
     def _blocked(self, raw: RawCase) -> CaseAudit:
         case = self._metadata_only(raw)
-        audit = CaseAudit(case=case, state="REDACTION_FAILED", error_kind="leak_detected")
-        audit.review_reasons = route("REDACTION_FAILED", None, None, None, None, None, None, self.s.review)
+        audit = CaseAudit(case=case, state="REDACTION_FAILED", error_kind="leak_detected",
+                          audited_at=datetime.now(timezone.utc), is_heuristic=self.provider.name == "mock")
+        audit.review_reasons = route("REDACTION_FAILED", None, cfg=self.s.review)
         return audit

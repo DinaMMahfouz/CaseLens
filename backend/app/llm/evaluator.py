@@ -127,6 +127,21 @@ def _validate_evidence(model, rubric: str, refs: dict[str, Optional[datetime]]) 
             else:
                 dropped += 1
         data[name] = kept
+    if rubric == "temperature":
+        valid = []
+        for r in data.get("readings", []):
+            ref = str(r.get("ref_id", "")).strip().upper()
+            if ref in refs:
+                valid.append({"ref_id": ref, "score": r["score"]})
+            else:
+                dropped += 1
+        # Chronological order by the cited item's timestamp (untimed last, in given order).
+        order = {k: (v is None, v.timestamp() if v else 0) for k, v in refs.items()}
+        valid.sort(key=lambda r: order[r["ref_id"]])
+        data["readings"] = valid
+        data.pop("trajectory", None)
+        if data["status"] == "OK" and not valid:
+            data.update(status="INSUFFICIENT_EVIDENCE", score=None)
     if rubric == "closure_reason":
         data["evidence"] = fix(data.get("evidence", []))
         if data["status"] == "OK" and not data["evidence"]:
@@ -137,7 +152,7 @@ def _validate_evidence(model, rubric: str, refs: dict[str, Optional[datetime]]) 
 
 def _redact_strings(obj: Any, redact: Callable[[str], str]) -> Any:
     if isinstance(obj, dict):
-        return {k: (v if k in ("ref_id", "timestamp", "status", "reason", "trajectory") else _redact_strings(v, redact))
+        return {k: (v if k in ("ref_id", "timestamp", "status", "reason", "trajectory", "score") else _redact_strings(v, redact))
                 for k, v in obj.items()}
     if isinstance(obj, list):
         return [_redact_strings(v, redact) for v in obj]

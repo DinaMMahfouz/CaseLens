@@ -386,7 +386,7 @@ def build_cases(R: datetime) -> list[CaseSpec]:
             Msg(None, "out", "Hi Priya,\n\nThe relay rejects our sender. Fix: add the server to the SMTP relay allow-list." + _sig_out("Marta Lindqvist")),
             Msg(o + timedelta(days=3), "in", "Done, emails arrive. Confirmed." + _sig_in(A["larkspur"])),
         ],
-        expected=dict(slo="INSUFFICIENT_DATA", idle="NO_SUPPORT_IDLE", three_strike="NOT_APPLICABLE"),
+        expected=dict(slo="INSUFFICIENT_DATA", idle="INSUFFICIENT_DATA", three_strike="NOT_APPLICABLE"),
     ))
 
     # 17. PII-heavy: hosts, IPs, serials, DN, secrets, signature, disclaimer, quoted chain

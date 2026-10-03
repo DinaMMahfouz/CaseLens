@@ -25,6 +25,10 @@ def _case(user: str) -> dict[str, Any]:
     return json.loads(m.group(1)) if m else {"case": {}, "timeline": []}
 
 
+def _n(count: int, word: str, plural: str | None = None) -> str:
+    return f"{count} {word if count == 1 else (plural or word + 's')}"
+
+
 def _ev(item: dict) -> list[dict]:
     return [{"ref_id": item["ref_id"], "timestamp": item.get("timestamp")}]
 
@@ -92,7 +96,7 @@ class MockProvider(LLMProvider):
         for key, items in asks.items():
             uniq = {i["ref_id"]: i for i in items}
             if len(uniq) >= 2:
-                repeated.append({"text": f"Requested the same {key} data {len(uniq)} times.",
+                repeated.append({"text": f"Requested the same {key} data {_n(len(uniq), 'time')}.",
                                  "evidence": [e for i in uniq.values() for e in _ev(i)]})
                 score -= 1.5
         everything = " ".join((i.get("body") or "").lower() for i in out + notes) + " " + \
@@ -108,7 +112,8 @@ class MockProvider(LLMProvider):
         coaching = ("Request all needed diagnostics once, with a reason, and track what was already received."
                     if repeated else "Restate the problem and state the working hypothesis in each update.")
         return {"status": "OK", "score": score,
-                "summary": f"{len(out)} support emails and {len(calls)} calls reviewed; {len(repeated)} repeated request type(s).",
+                "summary": f"{_n(len(out), 'support email')} and {_n(len(calls), 'call')} reviewed; "
+                           f"{_n(len(repeated), 'repeated request type')}.",
                 "top_issues": issues, "missed_steps": missed, "repeated_requests": repeated, "coaching_action": coaching}
 
     def _temperature(self, data):
@@ -116,21 +121,18 @@ class MockProvider(LLMProvider):
         desc = (data.get("case") or {}).get("description")
         msgs = ([{"ref_id": "DESC", "timestamp": desc.get("timestamp"), "body": desc.get("text")}] if desc and desc.get("text") else []) + inbound
         if not msgs:
-            return {"status": "INSUFFICIENT_EVIDENCE", "score": None, "trajectory": None, "summary": "No customer messages.",
+            return {"status": "INSUFFICIENT_EVIDENCE", "score": None, "readings": [], "summary": "No customer messages.",
                     "top_issues": [], "shift_points": [], "coaching_action": ""}
         heat = [min(5, 1 + sum(h in (m.get("body") or "").lower() for h in HOT)) for m in msgs]
-        latest = heat[-2:] if len(heat) >= 2 else heat
-        score = int(round(max(latest)))
-        half = max(1, len(heat) // 2)
-        tail = heat[half:] or heat[:half]
-        early, late = sum(heat[:half]) / half, sum(tail) / len(tail)
-        trajectory = "worsening" if late - early >= 1 else "improving" if early - late >= 1 else "stable"
-        shifts = [{"text": f"Customer temperature moved from {heat[i-1]} to {heat[i]}.", "evidence": _ev(msgs[i])}
+        score = heat[-1]
+        readings = [{"ref_id": m["ref_id"], "score": h} for m, h in zip(msgs, heat)]
+        trajectory = "worsening" if heat[-1] > heat[0] else "improving" if heat[-1] < heat[0] else "stable"
+        shifts = [{"text": f"Customer temperature {'rose' if heat[i] > heat[i-1] else 'eased'} here.", "evidence": _ev(msgs[i])}
                   for i in range(1, len(heat)) if abs(heat[i] - heat[i - 1]) >= 1]
         issues = [{"text": "Customer signals escalation risk.", "evidence": _ev(msgs[i])}
                   for i in range(len(heat)) if heat[i] >= 4][:3]
-        return {"status": "OK", "score": score, "trajectory": trajectory,
-                "summary": f"Customer temperature {score}/5, {trajectory}, across {len(msgs)} customer message(s).",
+        return {"status": "OK", "score": score, "readings": readings,
+                "summary": f"Customer was {trajectory} across {_n(len(msgs), 'customer message')}.",
                 "top_issues": issues, "shift_points": shifts,
                 "coaching_action": "Acknowledge the impact explicitly and give a dated action plan." if score >= 4
                 else "Keep proactive, dated updates to maintain customer confidence."}
@@ -157,7 +159,8 @@ class MockProvider(LLMProvider):
             score += 0.5
         score = int(max(1, min(5, round(score))))
         return {"status": "OK", "score": score,
-                "summary": f"{len(out)} outbound update(s), {len(with_next)} with explicit next steps; {len(handover)} handover issue(s).",
+                "summary": f"{_n(len(out), 'outbound update')}, {len(with_next)} with explicit next steps; "
+                           f"{_n(len(handover), 'handover issue')}.",
                 "top_issues": issues, "handover_issues": handover,
                 "coaching_action": "Write handover notes with symptom, actions tried, hypothesis and next step." if handover
                 else "End every update with a dated next step and owner."}

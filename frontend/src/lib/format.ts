@@ -39,9 +39,10 @@ export const REASON_META: Record<string, { label: string; color: string; hint: s
   REDACTION_FAILED: { label: "Redaction failed", color: C.danger, hint: "Leak scanner blocked the case; nothing was evaluated." },
   EVAL_FAILED: { label: "Eval failed", color: C.danger, hint: "LLM output stayed invalid after one retry." },
   RULE_BREACH: { label: "Rule breach", color: C.high, hint: "SLO breached or 3-strike applied incorrectly." },
-  HOT_CUSTOMER: { label: "Hot customer", color: C.high, hint: "Temperature ≥ 4 or worsening trajectory." },
+  HOT_CUSTOMER: { label: "Hot customer", color: C.high, hint: "Customer peaked Angry, or ended hotter than they started." },
   LOW_SCORE: { label: "Low score", color: C.warning, hint: "Overall score below threshold." },
-  LOW_CONFIDENCE: { label: "Low confidence", color: C.warning, hint: "Computed confidence is LOW." },
+  INSUFFICIENT_DATA: { label: "Insufficient data", color: C.warning, hint: "A check was excluded for missing source data, or data completeness is below 80%." },
+  EVALUATOR_DISAGREEMENT: { label: "Evaluator disagreement", color: C.warning, hint: "Evaluation runs disagree (score range ≥ 2 or < 75% agree)." },
 };
 
 export const humanize = (s: string | null | undefined) =>
@@ -65,3 +66,33 @@ export function fmtDuration(minutes: number | null | undefined) {
 }
 
 export const fmtScore = (s: number | null | undefined) => (s == null ? "—" : s.toFixed(1));
+
+// ------------------------------------------------------------------ Phase 1 helpers
+
+/** "1 call", "2 calls", "1 retry", "3 retries". */
+export function plural(n: number, singular: string, pluralForm?: string): string {
+  return `${n} ${n === 1 ? singular : pluralForm ?? (singular.endsWith("y") && !/[aeiou]y$/.test(singular) ? singular.slice(0, -1) + "ies" : singular + "s")}`;
+}
+
+/** Customer temperature context labels — mirrors config/scoring.yaml customer_temperature.labels. */
+const TEMP_LABELS: Record<number, string> = { 1: "Calm", 2: "Neutral", 3: "Frustrated", 4: "Angry", 5: "Angry" };
+export function temperatureLabel(value: number | null | undefined): string {
+  if (value == null) return "—";
+  return TEMP_LABELS[Math.min(5, Math.max(1, Math.round(value)))];
+}
+
+/** LLM card run summary: the per-run scores and completed/requested runs, never conflated with the score. */
+export function runsSummary(d: { run_scores?: (number | null)[]; requested_runs?: number; completed_runs?: number }) {
+  const scores = (d.run_scores ?? []).map((s) => (s == null ? "–" : String(s))).join(" · ");
+  const req = d.requested_runs ?? d.run_scores?.length ?? 0;
+  const done = d.completed_runs ?? req;
+  return { scores, completed: `${done} of ${plural(req, "run")} completed` };
+}
+
+export const NO_DATE_TITLE = "No date in source";
+
+/** Whole days between two instants (age of an open case). */
+export function ageDays(fromIso: string | null | undefined, now: Date = new Date()): number | null {
+  if (!fromIso) return null;
+  return Math.max(0, Math.floor((now.getTime() - new Date(fromIso).getTime()) / 86_400_000));
+}

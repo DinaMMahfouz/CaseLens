@@ -1,3 +1,4 @@
+import { DataError } from "../api";
 import type { ReactNode } from "react";
 import { C, REASON_META, humanize, outcomeColor, scoreColor, severityColor } from "../lib/format";
 
@@ -70,11 +71,24 @@ export function Empty({ children }: { children: ReactNode }) {
   return <div className="text-sm text-muted py-8 text-center">{children}</div>;
 }
 
+/** Only DataError messages (written by us) are shown; anything else becomes a generic message,
+ *  so raw database/driver errors never reach the screen. */
+export function safeMessage(error: unknown): string {
+  return error instanceof DataError ? error.message : "Something went wrong. Please try again.";
+}
+
 export function ErrorNote({ error }: { error: unknown }) {
   if (!error) return null;
   return (
-    <div className="panel border-danger/40 p-3 text-sm text-danger" role="alert">
-      {error instanceof Error ? error.message : String(error)}
+    <div className="panel border-danger/40 p-3 text-sm text-danger" role="alert">{safeMessage(error)}</div>
+  );
+}
+
+export function ErrorState({ error, onRetry }: { error: unknown; onRetry: () => void }) {
+  return (
+    <div className="panel p-8 text-center max-w-lg mx-auto mt-10" role="alert">
+      <p className="text-sm">{safeMessage(error)}</p>
+      <button className="btn-ghost mt-4" onClick={onRetry}>Retry</button>
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, type CaseRow } from "../api";
 import { Empty, ErrorNote, Loading, OutcomePill, Pill, ReasonPill, ScoreBadge, SeverityPill } from "../components/ui";
 import { useAsync, useRun } from "../lib/hooks";
-import { C, REASON_META, fmtDate, humanize, outcomeColor, severityColor } from "../lib/format";
+import { C, NO_DATE_TITLE, REASON_META, ageDays, fmtDate, humanize, outcomeColor, plural, severityColor } from "../lib/format";
 
 type SortKey = "case_number" | "severity" | "overall" | "opened_at";
 
@@ -117,11 +117,13 @@ export default function Cases() {
                 <th className="px-3 py-2.5 font-medium">Subject</th>
                 <th className="px-3 py-2.5 font-medium">TSE</th>
                 <th className="px-3 py-2.5 font-medium">Status</th>
+                <Th onClick={() => sortBy("opened_at")} active={filters.sort === "opened_at"} order={filters.order}>Opened</Th>
+                <th className="px-3 py-2.5 font-medium" title="Closed date, or age in days for open cases">Closed / Age</th>
                 <Th onClick={() => sortBy("overall")} active={filters.sort === "overall"} order={filters.order}>Score</Th>
                 <th className="px-3 py-2.5 font-medium">SLO</th>
                 <th className="px-3 py-2.5 font-medium">Idle</th>
                 <th className="px-3 py-2.5 font-medium">3-strike</th>
-                <th className="px-3 py-2.5 font-medium">Confidence</th>
+                <th className="px-3 py-2.5 font-medium" title="How complete the source data is for scoring">Data</th>
                 <th className="px-3 py-2.5 font-medium">Review</th>
               </tr>
             </thead>
@@ -143,6 +145,20 @@ function Th({ children, onClick, active, order }: { children: string; onClick: (
       </button>
     </th>
   );
+}
+
+export function DateCell({ iso }: { iso: string | null }) {
+  return iso ? <span title={new Date(iso).toISOString()}>{fmtDate(iso, false)}</span>
+             : <span title={NO_DATE_TITLE}>—</span>;
+}
+
+/** Closed cases show their close date; open cases show their age; a missing date is "—". */
+export function ClosedOrAge({ r, now }: { r: Pick<CaseRow, "status" | "closed_at" | "opened_at"> & { is_closed?: boolean }; now?: Date }) {
+  if (r.closed_at) return <DateCell iso={r.closed_at} />;
+  const closed = /closed|resolved/i.test(r.status);
+  if (closed) return <span title={NO_DATE_TITLE}>—</span>;
+  const age = ageDays(r.opened_at, now);
+  return age == null ? <span title={NO_DATE_TITLE}>—</span> : <span title="Open case age">{plural(age, "day")} open</span>;
 }
 
 export const ACTION_LABEL: Record<string, string> = { approve: "Approved", override: "Overridden", comment: "Commented" };
@@ -169,12 +185,16 @@ function Row({ r, onOpen }: { r: CaseRow; onOpen: () => void }) {
       <td className="px-3"><SeverityPill sev={r.severity} /></td>
       <td className="px-3 max-w-[340px]"><div className="truncate" title={r.subject}>{r.state === "REDACTION_FAILED" ? <span className="text-danger">Blocked by leak scanner</span> : r.subject}</div></td>
       <td className="px-3 text-xs text-muted whitespace-nowrap">{r.owner || "—"}</td>
-      <td className="px-3 text-muted whitespace-nowrap">{r.status}<div className="text-[11px]">{fmtDate(r.opened_at, false)}</div></td>
+      <td className="px-3 text-muted whitespace-nowrap">{r.status}</td>
+      <td className="px-3 text-muted whitespace-nowrap"><DateCell iso={r.opened_at} /></td>
+      <td className="px-3 text-muted whitespace-nowrap" data-testid="closed-cell"><ClosedOrAge r={r} /></td>
       <td className="px-3">{r.state === "OK" ? <ScoreBadge score={r.overall} /> : <OutcomePill value={r.state} />}</td>
       <td className="px-3"><Mini v={r.slo} /></td>
       <td className="px-3"><Mini v={r.idle} /></td>
       <td className="px-3"><Mini v={r.three_strike} /></td>
-      <td className="px-3"><OutcomePill value={r.confidence_level} /></td>
+      <td className="px-3 mono text-xs" style={{ color: (r.data_completeness ?? 1) < 0.8 ? C.warning : C.muted }}>
+        {r.data_completeness == null ? "—" : `${Math.round(r.data_completeness * 100)}%`}
+      </td>
       <td className="px-3">
         <div className="flex flex-wrap gap-1 max-w-[220px]">
           {r.review_reasons.map((x) => <ReasonPill key={x} code={x} />)}

@@ -60,7 +60,10 @@ def build_payload(session: Session, run_id: int) -> dict[str, list[dict[str, Any
     if run.status != "done":
         raise SyncError(f"local run {run_id} is {run.status}, not done")
     rid = str(uuid.uuid4())
-    out: dict[str, list[dict[str, Any]]] = {k: [] for k in TABLE_ORDER}
+    out: dict[str, Any] = {k: [] for k in TABLE_ORDER}
+    # Case owner names from the export, resolved to tses.id at push time (ingestion is the
+    # only place a name is mapped to an id; queries and access rules use ids only).
+    out["case_owners"] = {}
     out["runs"].append({
         "id": rid, "push_key": push_key(run), "as_of": _iso(run.as_of), "source": run.source,
         "synthetic": run.synthetic, "total": run.total, "failed": run.failed, "provider": run.provider,
@@ -77,9 +80,11 @@ def build_payload(session: Session, run_id: int) -> dict[str, list[dict[str, Any
             "id": cid, "run_id": rid, "case_number": c.case_number, "subject": c.subject or "",
             "description": c.description or "", "severity": c.severity, "status": c.status or "",
             "is_closed": c.is_closed, "opened_at": _iso(c.opened_at), "closed_at": _iso(c.closed_at),
-            "owner_name": c.owner_label or "", "account_label": c.account_label or "", "product": c.product or "",
+            "tse_id": None, "account_label": c.account_label or "", "product": c.product or "",
             "resolution": c.resolution or "", "missing_fields": c.missing_fields or [], "state": c.state,
         })
+        if c.owner_label:
+            out["case_owners"][cid] = c.owner_label
         for i in c.items:
             out["items"].append({
                 "id": str(uuid.uuid4()), "case_id": cid, "position": i.position, "ref_id": i.ref_id,
@@ -95,8 +100,12 @@ def build_payload(session: Session, run_id: int) -> dict[str, list[dict[str, Any
             "id": aid, "case_id": cid, "run_id": rid, "state": a.state, "overall": a.overall,
             "dimensions": a.dimensions or [], "slo": a.slo, "idle": a.idle, "three_strike": a.three_strike,
             "closure": a.closure, "llm": _slim_llm(a.llm or {}), "temperature_value": a.temperature_value,
-            "trajectory": a.trajectory, "confidence_score": a.confidence_score,
-            "confidence_level": a.confidence_level, "confidence_reasons": a.confidence_reasons or [],
+            "trajectory": a.trajectory, "temp_start": a.temp_start, "temp_end": a.temp_end,
+            "temp_peak": a.temp_peak, "scored_dimensions": a.scored_dimensions,
+            "applicable_dimensions": a.applicable_dimensions, "data_completeness": a.data_completeness,
+            "completeness_reasons": a.completeness_reasons or [], "run_agreement": a.run_agreement,
+            "agreement_details": a.agreement_details or {}, "is_heuristic": a.is_heuristic,
+            "audited_at": _iso(a.audited_at), "config_hash": run.config_hash,
             "review_reasons": a.review_reasons or [], "needs_review": a.needs_review,
             "unsupported_count": a.unsupported_count, "retry_count": a.retry_count, "provider": a.provider,
             "model": a.model, "temperature": a.temperature, "prompt_versions": a.prompt_versions or {},
@@ -108,10 +117,27 @@ def build_payload(session: Session, run_id: int) -> dict[str, list[dict[str, Any
     return out
 
 
-def sql_statements(payload: dict[str, list[dict[str, Any]]], max_bytes: int = 0) -> list[str]:
+def _dollar(text: str) -> str:
+    tag = "q" + secrets.token_hex(4)
+    while f"${tag}$" in text:
+        tag = "q" + secrets.token_hex(4)
+    return f"${tag}${text}${tag}$"
+
+
+def sql_statements(payload: dict[str, Any], max_bytes: int = 0) -> list[str]:
     """INSERT statements via jsonb_populate_recordset, optionally split to about max_bytes each."""
     out: list[str] = []
+    owners: dict[str, str] = payload.get("case_owners", {})
+    names = sorted(set(owners.values()))
+    if names:
+        out.append("insert into public.tses (display_name) select unnest(array["
+                   + ", ".join(_dollar(n) for n in names) + "]) on conflict (display_name) do nothing;")
     for table in TABLE_ORDER:
+        if table == "items" and names:
+            for name in names:
+                ids = ", ".join(f"'{cid}'" for cid, n in owners.items() if n == name)
+                out.append(f"update public.cases set tse_id = (select id from public.tses where display_name = "
+                           f"{_dollar(name)}) where id = any(array[{ids}]::uuid[]);")
         rows = payload[table]
         if not rows:
             continue
@@ -135,7 +161,7 @@ def sql_statements(payload: dict[str, list[dict[str, Any]]], max_bytes: int = 0)
     return out
 
 
-def to_sql(payload: dict[str, list[dict[str, Any]]]) -> str:
+def to_sql(payload: dict[str, Any]) -> str:
     """Render the payload as one transaction of INSERT statements."""
     return "\n".join(["begin;", *sql_statements(payload), "commit;"])
 
@@ -167,12 +193,14 @@ class SupabaseClient:
     def select(self, table: str, params: dict[str, str]) -> list[dict[str, Any]]:
         return self._check(self.http.get(f"/rest/v1/{table}", params=params), f"select {table}").json()
 
-    def insert(self, table: str, rows: Iterable[dict[str, Any]], upsert: bool = False, chunk: int = 500) -> None:
+    def insert(self, table: str, rows: Iterable[dict[str, Any]], upsert: bool = False, chunk: int = 500,
+               on_conflict: Optional[str] = None, ignore_duplicates: bool = False) -> None:
         rows = list(rows)
-        prefer = "return=minimal" + (",resolution=merge-duplicates" if upsert else "")
+        prefer = "return=minimal" + (",resolution=merge-duplicates" if upsert else "")             + (",resolution=ignore-duplicates" if ignore_duplicates else "")
+        params = {"on_conflict": on_conflict} if on_conflict else None
         for i in range(0, len(rows), chunk):
-            self._check(self.http.post(f"/rest/v1/{table}", json=rows[i:i + chunk], headers={"Prefer": prefer}),
-                        f"insert {table}")
+            self._check(self.http.post(f"/rest/v1/{table}", json=rows[i:i + chunk], params=params,
+                                       headers={"Prefer": prefer}), f"insert {table}")
 
     def delete(self, table: str, params: dict[str, str]) -> None:
         self._check(self.http.delete(f"/rest/v1/{table}", params=params), f"delete {table}")
@@ -198,7 +226,22 @@ class SupabaseClient:
             page += 1
 
 
-def push(client: SupabaseClient, payload: dict[str, list[dict[str, Any]]], replace: bool = False) -> str:
+def resolve_tses(client: SupabaseClient, payload: dict[str, Any]) -> None:
+    """Map export owner names to tses ids (creating missing TSE rows) and set cases.tse_id."""
+    owners: dict[str, str] = payload.get("case_owners", {})
+    names = sorted(set(owners.values()))
+    if not names:
+        return
+    client.insert("tses", [{"display_name": n} for n in names], on_conflict="display_name", ignore_duplicates=True)
+    quoted = ",".join('"' + n.replace('"', '\\"') + '"' for n in names)
+    rows = client.select("tses", {"select": "id,display_name", "display_name": f"in.({quoted})"})
+    ids = {r["display_name"]: r["id"] for r in rows}
+    for c in payload["cases"]:
+        name = owners.get(c["id"])
+        c["tse_id"] = ids.get(name) if name else None
+
+
+def push(client: SupabaseClient, payload: dict[str, Any], replace: bool = False) -> str:
     key = payload["runs"][0]["push_key"]
     existing = client.select("runs", {"select": "id", "push_key": f"eq.{key}"})
     if existing:
@@ -206,6 +249,7 @@ def push(client: SupabaseClient, payload: dict[str, list[dict[str, Any]]], repla
             raise SyncError("this run was already pushed; use --replace to overwrite it "
                             "(this also deletes reviewer actions recorded on it)")
         client.delete("runs", {"push_key": f"eq.{key}"})
+    resolve_tses(client, payload)
     for table in TABLE_ORDER:
         if payload[table]:
             client.insert(table, payload[table])

@@ -46,9 +46,15 @@ def evaluate_idle(case: RedactedCase, rules: dict[str, Any], as_of: datetime) ->
     days = float(cfg.get("threshold_days", 5))
     threshold = timedelta(days=days)
     phrases = [_norm(p) for p in cfg.get("customer_wait_phrases", [])]
+    untimed = [i for i in case.items if i.customer_facing and not i.is_auto_ack and i.occurred_at is None]
+    if untimed:
+        # A gap cannot be ruled out when a communication has no time: never assume "no idle".
+        n = len(untimed)
+        return IdleResult(status="INSUFFICIENT_DATA", threshold_days=days, missing_data=True,
+                          reason=f"{n} customer-facing {'communication has' if n == 1 else 'communications have'} no timestamp")
     events = _events(case, bool(cfg.get("include_case_opened_event", True)))
     if not events:
-        return IdleResult(status="INSUFFICIENT_DATA", threshold_days=days,
+        return IdleResult(status="INSUFFICIENT_DATA", threshold_days=days, missing_data=True,
                           reason="no timestamped customer-facing communications")
 
     pairs: list[tuple[_Event, Optional[_Event], datetime]] = [
@@ -78,5 +84,6 @@ def evaluate_idle(case: RedactedCase, rules: dict[str, Any], as_of: datetime) ->
         status="SUPPORT_IDLE" if support > 0 else "NO_SUPPORT_IDLE",
         threshold_days=days, windows=windows,
         support_idle_hours=round(support, 2), customer_idle_hours=round(customer, 2),
-        reason=f"{len(windows)} idle window(s) over {days:g} days",
+        reason=(f"{len(windows)} idle {'window' if len(windows) == 1 else 'windows'} over {days:g} days"
+                if windows else f"no gaps over {days:g} days"),
     )

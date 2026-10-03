@@ -5,17 +5,22 @@ rules:
   LOW_SCORE:
     enabled: true
     overall_below: 4.0
-  LOW_CONFIDENCE:
-    enabled: true
-    levels: [LOW]
   RULE_BREACH:
     enabled: true
     slo_breached: true
     three_strike_incorrect: true
   HOT_CUSTOMER:
     enabled: true
-    temperature_at_least: 4
-    trajectory_worsening: true
+    peak_at_least: 4              # peak customer temperature (1-5) at or above this
+    end_above_start: true         # or the customer ended hotter than they started
+  INSUFFICIENT_DATA:
+    enabled: true
+    excluded_deterministic_dimension: true   # SLO / idle / 3-strike excluded for missing source data
+    data_completeness_below: 0.80
+  EVALUATOR_DISAGREEMENT:
+    enabled: true
+    run_score_range_at_least: 2   # on any LLM dimension, 1-5 scale
+    modal_share_below: 0.75       # or fewer than 75% of runs give the most common score
   EVAL_FAILED:
     enabled: true
   REDACTION_FAILED:
